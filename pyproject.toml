@@ -1,0 +1,76 @@
+[tool.poetry]
+name = "goat_routing"
+version = "2.0.0"
+description = "Routing API for GOAT service."
+authors = ["EPajares <elias.pajares@plan4better.de>", "Majk Shkurti <majk.shkurti@plan4better.de>"]
+readme = "README.md"
+keywords = ["GOAT", "API", "Spatial", "Routing", "Indicators"]
+
+
+[tool.black]
+line-length = 88
+target-version = [ "py310", "py311" ]
+exclude = "((.eggs | .git | .pytest_cache | build | dist))"
+
+[tool.ruff]
+line-length = 88
+exclude = [".git", "__pycache__", ".mypy_cache", ".pytest_cache"]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    # "I",  # isort
+    "C",  # flake8-comprehensions
+    "B",  # flake8-bugbear
+]
+ignore = [
+    "B904",
+    "B006",    
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.poetry.dependencies]
+python = ">3.9,<3.12"
+uvicorn = "^0.17.6"
+fastapi = {extras = ["all"], version = "^0.96.1"}
+pydantic = "^1.10.7"
+psycopg2-binary = "^2.8.5"
+SQLAlchemy = "^1.4.23"
+asyncpg = "^0.27.0"
+polars = "^0.19.13"
+numpy = "^1.26.2"
+numba = "^0.58.1"
+scipy = "^1.11.3"
+geopandas = "^0.14.1"
+shapely = "^2.0.2"
+asyncio = "^3.4.3"
+
+
+[tool.poetry.group.dev.dependencies]
+sqlalchemy-stubs = "^0.3"
+debugpy = "^1.4.1"
+ruff = "^0.0.269"
+black = "^23.3.0"
+pytest = "^7.3.2"
+pytest-asyncio = "^0.21.0"
+pytest-cov = "^4.1.0"
+pytest-mock = "^3.11.1"
+pytest-postgresql = "^5.0.0"
+pre-commit = "^3.3.3"
+pytest-testmon = "^2.0.9"
+pytest-sugar = "^0.9.7"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pyright]
+reportGeneralTypeIssues = false
+
+[tool.pytest.ini_options]
+addopts="-n 1"
