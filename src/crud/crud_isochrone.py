@@ -1,35 +1,70 @@
+import time
 from typing import Any
+
 import numpy as np
 from geopandas import GeoDataFrame
 from pandas.io.sql import read_sql
 from shapely.geometry import Point
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
-from src.core.isochrone import compute_isochrone
-from src.db import models
-from src.db.session import legacy_engine
-from src.schemas.isochrone import (
-    IIsochroneActiveMobility,
-    IsochroneMode,
-    IsochroneStartingPointCoord,
-    IsochroneTypeEnum,
-)
+import src.crud.crud_isochrone_helper as helper
+from src.core.config import settings
+from src.db.db import Database
+
+# from src.db import models
+# from src.db.session import legacy_engine
+from src.schemas.isochrone import IIsochroneActiveMobility
 
 
 class CRUDIsochrone:
-    def init_network():
-        #TODO: Add function here to read the data from database into polars.
-        # We should save the geofence_active_mobility in the goat database and read the network for the respective area in chunks of h3 cells.
-        # We could have the table dynamically defined in the config.py so we could ready other (smaller) extents for testing.
-        # From what we know at the moment we should have one polars df for each h3-res3 cell.
-        pass
+    def __init__(self):
+        self.segments_df = {}
+        self.connectors_df = {}
 
+    def init_network(self):
+        """Initialize the network by loading it into memory using polars data frames."""
 
-    def read_network(
-        self, db, obj_in: IIsochroneActiveMobility
-    ) -> Any:
-        # TODO: Once the data is inside polary we can start with writing the functions to read from polary 
+        start_time = time.time()
+        print("Loading network into polars...")
+
+        # Get network H3 cells
+        h3_indexes = []
+        db = Database(settings.POSTGRES_DATABASE_URI)
+        try:
+            sql_get_h3_grid = f"""
+                WITH region AS (
+                    SELECT geom from {settings.NETWORK_REGION_TABLE}
+                )
+                SELECT g.h3_short FROM region r,
+                LATERAL temporal.fill_polygon_h3(r.geom) g;
+            """
+            for h3_index in db.select(sql_get_h3_grid):
+                h3_indexes.append(h3_index[0])
+        except Exception as e:
+            print(e)
+        finally:
+            db.conn.close()
+
+        # Load segments & connectors into polars data frames
+        try:
+            for h3_index in h3_indexes:
+                print(f"Loading network for H3 index {h3_index}.")
+
+                self.segments_df[h3_index] = helper.retrieve_segments(
+                    settings.POSTGRES_DATABASE_URI, h3_index
+                )
+                self.connectors_df[h3_index] = helper.retrieve_connectors(
+                    settings.POSTGRES_DATABASE_URI, h3_index
+                )
+        except Exception as e:
+            print(e)
+
+        print(
+            f"Network loaded into polars. Time taken: {time.time() - start_time} sec."
+        )
+
+    def read_network(self, db, obj_in: IIsochroneActiveMobility) -> Any:
+        # TODO: Once the data is inside polary we can start with writing the functions to read from polary
         # The first thing is that we need to identify the h3-res3 that are needed for the isochrone calculation.
         # One idea that can work is that we get the h3-res5 grids for the starting points + a buffer distance that is defined
         # as flying-bird distance from the max travel time and speed.
@@ -56,10 +91,14 @@ class CRUDIsochrone:
         read_network_sql = text(sql_text)
         routing_profile = None
         if obj_in.mode.value == IsochroneMode.WALKING.value:
-            routing_profile = obj_in.mode.value + "_" + obj_in.settings.walking_profile.value
+            routing_profile = (
+                obj_in.mode.value + "_" + obj_in.settings.walking_profile.value
+            )
 
         if obj_in.mode.value == IsochroneMode.CYCLING.value:
-            routing_profile = obj_in.mode.value + "_" + obj_in.settings.cycling_profile.value
+            routing_profile = (
+                obj_in.mode.value + "_" + obj_in.settings.cycling_profile.value
+            )
 
         x = y = None
         if (
@@ -70,7 +109,9 @@ class CRUDIsochrone:
                 x = [point.lon for point in obj_in.starting_point.input]
                 y = [point.lat for point in obj_in.starting_point.input]
             else:
-                starting_points = self.starting_points_opportunities(current_user, db, obj_in)
+                starting_points = self.starting_points_opportunities(
+                    current_user, db, obj_in
+                )
                 x = starting_points[0][0]
                 y = starting_points[0][1]
         else:
@@ -141,13 +182,16 @@ class CRUDIsochrone:
         )
         return edges_network, starting_ids, starting_point_geom
 
-
-    def calculate(
-        self, db: AsyncSession, obj_in: IsochroneDTO, current_user: models.User, study_area_bounds
+    """def calculate(
+        self,
+        db: AsyncSession,
+        obj_in: IsochroneDTO,
+        current_user: models.User,
+        study_area_bounds,
     ) -> Any:
-        """
+        \"""
         Calculate the isochrone for a given location and time
-        """
+        \"""
         grid = None
         result = None
         network = None
@@ -175,17 +219,18 @@ class CRUDIsochrone:
         )
 
         # TODO: The idea is to generate here different return types
-        #Network: return the reached network edges with the respective travel times
-        #Polygon: return the Jsoline polygon (use function from jsoline)
-        #Grid: return the traveltime grid
+        # Network: return the reached network edges with the respective travel times
+        # Polygon: return the Jsoline polygon (use function from jsoline)
+        # Grid: return the traveltime grid
 
-        return result
+        return result"""
 
     def save_result():
-        #TODO: The results should be saved to the user_data database. Depending on the result type we need a fast method to save the data.
+        # TODO: The results should be saved to the user_data database. Depending on the result type we need a fast method to save the data.
         # It could be faster to avoid saving the data in a geospatial format and just save the data as a list of coordinates first into a temp table.
         # In that case we can make use of more performant connectors such as ADBC. We can then convert the data to valid geometries inside the database.
         pass
 
 
 isochrone = CRUDIsochrone()
+isochrone.init_network()
