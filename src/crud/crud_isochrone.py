@@ -2,6 +2,7 @@ import time
 from typing import Any
 
 import numpy as np
+import polars as pl
 from geopandas import GeoDataFrame
 from pandas.io.sql import read_sql
 from shapely.geometry import Point
@@ -28,18 +29,19 @@ class CRUDIsochrone:
         print("Loading network into polars...")
 
         # Get network H3 cells
-        h3_indexes = []
+        h3_3_grid = []
         db = Database(settings.POSTGRES_DATABASE_URI)
         try:
-            sql_get_h3_grid = f"""
+            sql_get_h3_3_grid = f"""
                 WITH region AS (
                     SELECT geom from {settings.NETWORK_REGION_TABLE}
                 )
                 SELECT g.h3_short FROM region r,
-                LATERAL temporal.fill_polygon_h3(r.geom) g;
+                LATERAL temporal.fill_polygon_h3_3(r.geom) g;
             """
-            for h3_index in db.select(sql_get_h3_grid):
-                h3_indexes.append(h3_index[0])
+            for h3_index in db.select(sql_get_h3_3_grid):
+                h3_3_grid.append(h3_index[0])
+                break
         except Exception as e:
             print(e)
         finally:
@@ -47,7 +49,7 @@ class CRUDIsochrone:
 
         # Load segments & connectors into polars data frames
         try:
-            for h3_index in h3_indexes:
+            for h3_index in h3_3_grid:
                 print(f"Loading network for H3 index {h3_index}.")
 
                 self.segments_df[h3_index] = helper.retrieve_segments(
@@ -64,13 +66,63 @@ class CRUDIsochrone:
         )
 
     def read_network(self, db, obj_in: IIsochroneActiveMobility) -> Any:
-        # TODO: Once the data is inside polary we can start with writing the functions to read from polary
-        # The first thing is that we need to identify the h3-res3 that are needed for the isochrone calculation.
-        # One idea that can work is that we get the h3-res5 grids for the starting points + a buffer distance that is defined
-        # as flying-bird distance from the max travel time and speed.
-        # There are functions in h3 that can get the neighbors of a given h3 cell and we can derive the size of the respective grid resolution with another function.
-        # After we have the h3-res5 cells we can get the h3-res3 parent cells.
-        # With both h3-res3 and h3-res5 cells we can query the polars df and get the data for the respective cells without doing any spatial intersections.
+        # Compute buffer distance for identifying relevant H3_5 cells
+        buffer_dist = obj_in.travel_cost.max_traveltime * (
+            (obj_in.travel_cost.speed * 1000) / 60
+        )
+
+        start = time.time()
+
+        # Identify H3_3 & H3_5 cells relevant to this isochrone calculation
+        h3_3_cells = set()
+        h3_5_cells = set()
+
+        x_points = obj_in.starting_points.longitude
+        y_points = obj_in.starting_points.latitude
+        for i in range(len(x_points)):
+            x, y = x_points[i], y_points[i]
+
+            sql_get_relevant_cells = f"""
+                WITH point AS (
+                    SELECT geom FROM temporal.isochrone_input
+                ),
+                num_cells AS (
+                    SELECT generate_series(0, CASE WHEN value < 1.0 THEN 0 ELSE ROUND(value)::int END) AS value
+                    FROM (SELECT ({buffer_dist} / (h3_get_hexagon_edge_length_avg(5, 'm') * 2)) AS value) sub
+                ),
+                cells AS (
+                    SELECT DISTINCT h3_grid_ring_unsafe(h3_lat_lng_to_cell(point.geom::point, 5), sub.value) AS h3_index
+                    FROM point,
+                    LATERAL (SELECT * FROM num_cells) sub
+                )
+                SELECT to_short_h3_3(h3_cell_to_parent(h3_index, 3)::bigint) AS h3_3, ARRAY_AGG(to_short_h3_5(h3_index::bigint)) AS h3_5
+                FROM cells
+                GROUP BY h3_3;
+            """
+            result = db.select(sql_get_relevant_cells)
+
+            for h3_3_cell in result:
+                h3_3_cells.add(h3_3_cell[0])
+                for h3_5_cell in h3_3_cell[1]:
+                    h3_5_cells.add(h3_5_cell)
+
+        print(f"{h3_5_cells}")
+
+        sub_network = pl.DataFrame()
+
+        # Get relevant segments & connectors
+        for h3_3 in h3_3_cells:
+            sub_df = self.segments_df[h3_3].filter(pl.col("h3_5").is_in(h3_5_cells))
+            if sub_network.width > 0:
+                sub_network.extend(sub_df)
+            else:
+                sub_network = sub_df
+
+        print(sub_network.shape)
+
+        print(f"Time taken: {time.time() - start} sec.")
+
+        return
 
         # TODO: We need to read the scenario network dynamically from DB if a scenario is selected.
         sql_text = ""
@@ -234,3 +286,27 @@ class CRUDIsochrone:
 
 isochrone = CRUDIsochrone()
 isochrone.init_network()
+
+db = Database(settings.POSTGRES_DATABASE_URI)
+try:
+    isochrone.read_network(
+        db,
+        IIsochroneActiveMobility(
+            starting_points={"latitude": [10.4780595], "longitude": [52.7052410]},
+            routing_type="walking",
+            travel_cost={
+                "max_traveltime": 45,
+                "traveltime_step": 10,
+                "speed": 25,
+            },
+            isochrone_type="polygon",
+            polygon_difference=True,
+            result_table="polygon_744e4fd1685c495c8b02efebce875359",
+            layer_id="744e4fd1-685c-495c-8b02-efebce875359",
+        ),
+    )
+except Exception as e:
+    print(e)
+    raise e
+finally:
+    db.close()
