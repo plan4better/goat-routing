@@ -405,7 +405,7 @@ def jsolines(
     return result
 
 
-def generate_jsolines(grid, travel_time, percentile):
+def generate_jsolines(grid, travel_time, percentile, step=1):
     """
     Generate the jsolines from the isochrones.
 
@@ -424,7 +424,7 @@ def generate_jsolines(grid, travel_time, percentile):
         grid["west"],
         grid["north"],
         grid["zoom"],
-        cutoffs=np.arange(1, travel_time + 1),
+        cutoffs=np.arange(start=1, stop=(travel_time + 1), step=step),
         return_incremental=True,
     )
     return isochrones

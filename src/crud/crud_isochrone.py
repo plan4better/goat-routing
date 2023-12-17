@@ -389,12 +389,15 @@ class CRUDIsochrone:
                 grid=isochrone_grid,
                 travel_time=obj_in.travel_cost.max_traveltime,
                 percentile=5,
+                step=obj_in.travel_cost.traveltime_step,
             )
 
             print("Computed isochrone shapes.")
         except Exception as e:
             print(e)
             raise e  # TODO Return error status/message instead
+
+        print(isochrone_shapes)
 
         # TODO: The idea is to generate here different return types
         # Network: return the reached network edges with the respective travel times
