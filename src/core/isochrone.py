@@ -1,6 +1,6 @@
 import heapq
 import math
-import time
+
 import numpy as np
 from numba import njit
 from numba.core import types
@@ -15,7 +15,9 @@ from src.utils import (
 
 
 @njit(cache=True)
-def construct_adjacency_list_(n, edge_source, edge_target, edge_cost, edge_reverse_cost):
+def construct_adjacency_list_(
+    n, edge_source, edge_target, edge_cost, edge_reverse_cost
+):
     """
     Construct adjacency list from edges
     :param n: Number of nodes
@@ -34,9 +36,13 @@ def construct_adjacency_list_(n, edge_source, edge_target, edge_cost, edge_rever
                 adj_list[edge_source[i]].append(List([edge_target[i], edge_cost[i]]))
         if edge_reverse_cost[i] >= 0.0:
             if adj_list[edge_target[i]][0][0] == -1.001:
-                adj_list[edge_target[i]] = List([List([edge_source[i], edge_reverse_cost[i]])])
+                adj_list[edge_target[i]] = List(
+                    [List([edge_source[i], edge_reverse_cost[i]])]
+                )
             else:
-                adj_list[edge_target[i]].append(List([edge_source[i], edge_reverse_cost[i]]))
+                adj_list[edge_target[i]].append(
+                    List([edge_source[i], edge_reverse_cost[i]])
+                )
     return adj_list
 
 
@@ -177,8 +183,9 @@ def remap_edges(edge_source, edge_target, geom_address, geom_array):
         key_type=types.int64,
         value_type=types.int64,
     )
-    node_coords = np.empty((len(edge_source), 2), np.double)
+    node_coords = np.empty((int(len(edge_source) * 1.25), 2), np.double)
     id = 0
+    print(f"Expected unique nodes: {len(edge_source)}")
     for i in range(len(edge_source)):
         edge_geom = geom_array[geom_address[i] : geom_address[i + 1], :]
         # source
@@ -197,6 +204,7 @@ def remap_edges(edge_source, edge_target, geom_address, geom_array):
             id += 1
         else:
             edge_target[i] = unordered_map.get(edge_target[i])
+    print(f"Actual unique nodes: {id}")
     return unordered_map, node_coords[: len(unordered_map)]
 
 
@@ -211,7 +219,13 @@ def estimate_split_edges_size(edge_length, geom_array, split_distance):
 
 @njit(cache=True)
 def split_edges(
-    edge_source, edge_target, edge_length, geom_address, geom_array, agg_costs, split_distance
+    edge_source,
+    edge_target,
+    edge_length,
+    geom_address,
+    geom_array,
+    agg_costs,
+    split_distance,
 ):
     """
     Split edges into multiple edges
@@ -244,7 +258,8 @@ def split_edges(
                     # find distance between current and next point
                     next_coord = geom[idx + 1]
                     dist = math.sqrt(
-                        (coord[0] - next_coord[0]) ** 2 + ((coord[1] - next_coord[1])) ** 2
+                        (coord[0] - next_coord[0]) ** 2
+                        + ((coord[1] - next_coord[1])) ** 2
                     )
                     agg_dist = previous_agg_dist + dist
 
@@ -252,8 +267,12 @@ def split_edges(
                     for n in range(1, n_splits + 1):
                         counter += 1
                         distance_to_next = n * split_distance
-                        x = coord[0] - ((distance_to_next * (coord[0] - next_coord[0])) / dist)
-                        y = coord[1] - ((distance_to_next * (coord[1] - next_coord[1])) / dist)
+                        x = coord[0] - (
+                            (distance_to_next * (coord[0] - next_coord[0])) / dist
+                        )
+                        y = coord[1] - (
+                            (distance_to_next * (coord[1] - next_coord[1])) / dist
+                        )
                         coords[counter] = [x, y]
                         cost = source_cost + (
                             (previous_agg_dist + distance_to_next) / total_length
@@ -320,7 +339,9 @@ def get_geom_array(edges_geom):
     return geom_address, geom_array
 
 
-def build_grid_interpolate_(points, costs, extent, step_x, step_y, speed, max_traveltime):
+def build_grid_interpolate_(
+    points, costs, extent, step_x, step_y, speed, max_traveltime
+):
     """
     Build grid interpolate
     :param points: List of points
@@ -336,7 +357,9 @@ def build_grid_interpolate_(points, costs, extent, step_x, step_y, speed, max_tr
 
     tree = spatial.KDTree(points)
     grid_points = np.stack((X.flatten(), Y.flatten()), axis=1)
-    distances, indices = tree.query(grid_points, k=1, distance_upper_bound=200, workers=-1)
+    distances, indices = tree.query(
+        grid_points, k=1, distance_upper_bound=200, workers=-1
+    )
     distances[distances == np.inf] = np.NaN
     additional_costs = (distances / speed) / 60
     indices_flatten = indices.flatten()
@@ -354,29 +377,21 @@ def build_grid_interpolate_(points, costs, extent, step_x, step_y, speed, max_tr
 
 def prepare_network_isochrone(edge_network_input):
     edge_network = edge_network_input.copy()
-    edge_network.astype(
-        {
-            "id": np.int64,
-            "source": np.int64,
-            "target": np.int64,
-            "cost": np.double,
-            "reverse_cost": np.double,
-            "length": np.double,
-        }
-    )
     # remap edges
-    edges_source = edge_network["source"].to_numpy()
-    edges_target = edge_network["target"].to_numpy()
-    edges_cost = edge_network["cost"].to_numpy()
-    edges_reverse_cost = edge_network["reverse_cost"].to_numpy()
-    time()
+    edges_source = edge_network["source"]
+    edges_target = edge_network["target"]
+    edges_cost = edge_network["cost"]
+    edges_reverse_cost = edge_network["reverse_cost"]
+    # time()
     geom_address, geom_array = get_geom_array(edge_network["geom"])
-    time()
+    # time()
     # print(f"Convert geom array time: \t {end_time - start_time} s")
     edges_length = np.array(edge_network["length"])
-    time()
-    unordered_map, node_coords = remap_edges(edges_source, edges_target, geom_address, geom_array)
-    time()
+    # time()
+    unordered_map, node_coords = remap_edges(
+        edges_source, edges_target, geom_address, geom_array
+    )
+    # time()
     # print(f"Remap edges time: \t\t {end_time-start_time} s")
 
     extent = get_extent(geom_array)
@@ -453,7 +468,12 @@ def network_to_grid(
     node_costs_list = np.concatenate((distances, interpolated_costs))
 
     node_coords_list, node_costs_list = filter_nodes(
-        node_coords_list, node_costs_list, zoom, width_pixel, xy_bottom_left[0], xy_top_right[1]
+        node_coords_list,
+        node_costs_list,
+        zoom,
+        width_pixel,
+        xy_bottom_left[0],
+        xy_top_right[1],
     )
 
     Z = build_grid_interpolate_(

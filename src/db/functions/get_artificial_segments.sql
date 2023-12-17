@@ -17,7 +17,11 @@ CREATE TYPE temporal.artificial_segment AS (
 
 
 DROP FUNCTION IF EXISTS temporal.get_artificial_segments;
-CREATE OR REPLACE FUNCTION temporal.get_artificial_segments(num_points integer, classes text)
+CREATE OR REPLACE FUNCTION temporal.get_artificial_segments(
+    input_table text,
+    num_points integer,
+    classes text
+)
 RETURNS SETOF temporal.artificial_segment
 LANGUAGE plpgsql
 AS $function$
@@ -40,7 +44,7 @@ BEGIN
                     id, geom,
                     ST_SETSRID(ST_Buffer(geom::geography, 100)::geometry, 4326) AS buffer_geom,
                     to_short_h3_3(h3_lat_lng_to_cell(ST_Centroid(geom)::point, 3)::bigint) AS h3_3
-                FROM temporal.isochrone_input
+                FROM temporal."%s"
                 LIMIT %s::int
             ),
             best_segment AS (
@@ -50,7 +54,7 @@ BEGIN
                     s.impedance_surface, s."source", s.target, s.tags, s.geom,
                     s.h3_3, s.h3_5, ST_LineLocatePoint(s.geom, o.geom) AS fraction,
                     ST_ClosestPoint(s.geom, o.geom) AS fraction_geom
-                FROM temporal.segment s, origin o
+                FROM basic.segment s, origin o
                 WHERE
                 s.h3_3 = o.h3_3
                 AND s.class_ = ANY(string_to_array(''%s'', '',''))
@@ -71,7 +75,7 @@ BEGIN
                 bs.id, bs.class_, bs.impedance_slope, bs.impedance_slope_reverse,
                 bs.impedance_surface, bs."source", bs.target, bs.tags,
                 bs.geom, bs.h3_3, bs.h3_5;'
-        , num_points, classes);
+        , input_table, num_points, classes);
 	
 	LOOP
 		FETCH custom_cursor INTO origin_segment;
