@@ -83,8 +83,8 @@ class FetchRoutingNetwork:
         except Exception as e:
             print(e)
 
-        print(f"Network load time: {round((time.time() - start_time) / 60, 1)} min.")
-        print(f"Network in-memory size: {round(df_size, 1)} GB.")
+        print(f"Network load time: {round((time.time() - start_time) / 60, 1)} min")
+        print(f"Network in-memory size: {round(df_size, 1)} GB")
 
         return segments_df
 
@@ -110,8 +110,6 @@ class CRUDIsochrone:
         self, db, routing_network: dict, obj_in: IIsochroneActiveMobility
     ) -> Any:
         """Read relevant sub-network for Isochrone calculation from polars dataframe."""
-
-        start_time = time.time()
 
         # Create input table for isochrone origin points
         input_table, num_points = self.create_input_table(db, obj_in)
@@ -253,10 +251,6 @@ class CRUDIsochrone:
         )
         sub_network["length"] = np.fromiter(sub_network["length"], dtype=np.double)
 
-        print(
-            f"Read network from memory. Time: {round(time.time() - start_time, 2)} sec."
-        )
-
         return sub_network, origin_point_connectors
 
     def create_input_table(self, db, obj_in: IIsochroneActiveMobility):
@@ -345,16 +339,51 @@ class CRUDIsochrone:
         else:
             return None
 
-    def save_result():
-        # TODO: The results should be saved to the user_data database. Depending on the result type we need a fast method to save the data.
-        # It could be faster to avoid saving the data in a geospatial format and just save the data as a list of coordinates first into a temp table.
-        # In that case we can make use of more performant connectors such as ADBC. We can then convert the data to valid geometries inside the database.
-        pass
+    def save_result(self, db, obj_in: IIsochroneActiveMobility, shapes, network, grid):
+        if obj_in.isochrone_type == "polygon":
+            # Save isochrone geometry data (shapes)
+            shapes = shapes["incremental"]
+            insert_string = ""
+            for i in shapes.index:
+                geom = shapes["geometry"][i]
+                minute = shapes["minute"][i]
+                insert_string += f"('{obj_in.layer_id}', ST_SetSRID(ST_GeomFromText('{geom}'), 4326), {minute}),"
+            insert_string = f"""
+                INSERT INTO user_data.{obj_in.result_table} (layer_id, geom, integer_attr1)
+                VALUES {insert_string.rstrip(",")};
+            """
+            db.perform(insert_string)
+        elif obj_in.isochrone_type == "network":
+            # Save isochrone network data
+            batch_size = 1000
+            insert_string = ""
+            for i in range(0, len(network["features"])):
+                coordinates = network["features"][i]["geometry"]["coordinates"]
+                cost = network["features"][i]["properties"]["cost"]
+                points_string = ""
+                for pair in coordinates:
+                    points_string += f"ST_MakePoint({pair[0]}, {pair[1]}),"
+                insert_string += f"""(
+                    '{obj_in.layer_id}',
+                    ST_Transform(ST_SetSRID(ST_MakeLine(ARRAY[{points_string.rstrip(',')}]), 3857), 4326),
+                    {cost}
+                ),"""
+                if i % batch_size == 0:
+                    insert_string = f"""
+                        INSERT INTO user_data.{obj_in.result_table} (layer_id, geom, float_attr1)
+                        VALUES {insert_string.rstrip(",")};
+                    """
+                    db.perform(insert_string)
+                    insert_string = ""
+        else:
+            # Save isochrone grid data
+            pass
 
     def run(self, routing_network: dict, obj_in: IIsochroneActiveMobility):
         """Compute isochrones for the given request parameters."""
 
         # Read & process routing network to extract relevant sub-network
+        start_time = time.time()
         db = Database(settings.POSTGRES_DATABASE_URI)
         sub_routing_network = None
         origin_connector_ids = None
@@ -369,8 +398,10 @@ class CRUDIsochrone:
             raise e  # TODO Return error status/message instead
         finally:
             db.close()
+        print(f"Network read time: {round(time.time() - start_time, 2)} sec")
 
         # Compute isochrone utilizing processed sub-network
+        start_time = time.time()
         isochrone_grid = None
         isochrone_network = None
         isochrone_shapes = None
@@ -382,26 +413,31 @@ class CRUDIsochrone:
                 speed=obj_in.travel_cost.speed / 3.6,
                 zoom=12,
             )
-
             print("Computed isochrone grid & network.")
 
-            isochrone_shapes = generate_jsolines(
-                grid=isochrone_grid,
-                travel_time=obj_in.travel_cost.max_traveltime,
-                percentile=5,
-                step=obj_in.travel_cost.traveltime_step,
-            )
-
-            print("Computed isochrone shapes.")
+            if obj_in.isochrone_type == "polygon":
+                isochrone_shapes = generate_jsolines(
+                    grid=isochrone_grid,
+                    travel_time=obj_in.travel_cost.max_traveltime,
+                    percentile=5,
+                    step=obj_in.travel_cost.traveltime_step,
+                )
+                print("Computed isochrone shapes.")
         except Exception as e:
             print(e)
             raise e  # TODO Return error status/message instead
+        print(f"Isochrone computation time: {round(time.time() - start_time, 2)} sec")
 
-        print(isochrone_shapes)
-
-        # TODO: The idea is to generate here different return types
-        # Network: return the reached network edges with the respective travel times
-        # Polygon: return the Jsoline polygon (use function from jsoline)
-        # Grid: return the traveltime grid
-
-        # TODO: Save the result to the database using the save_result function
+        # Write output of isochrone computation to database
+        start_time = time.time()
+        db = Database(settings.POSTGRES_DATABASE_URI)
+        try:
+            self.save_result(
+                db, obj_in, isochrone_shapes, isochrone_network, isochrone_grid
+            )
+        except Exception as e:
+            print(e)
+            raise e  # TODO Return error status/message instead
+        finally:
+            db.close()
+        print(f"Result save time: {round(time.time() - start_time, 2)} sec")
