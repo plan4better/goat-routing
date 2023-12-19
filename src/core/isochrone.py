@@ -47,7 +47,7 @@ def construct_adjacency_list_(
 
 
 @njit(cache=True)
-def dijkstra(start_vertices, adj_list, travel_time):
+def dijkstra(start_vertices, adj_list, travel_time, use_distance=False):
     """
     Dijkstra's algorithm one-to-all shortest path search
     :param start_vertices: List of start vertices
@@ -78,7 +78,9 @@ def dijkstra(start_vertices, adj_list, travel_time):
             # check the distance and node and distance
             for v, l in adj_list[u]:
                 v = int(v)
-                l = l / 60.0  # convert cost to minutes
+                l = (
+                    (l / 60.0) if not use_distance else l
+                )  # convert cost to minutes if required
                 # if the current node's distance + distance to the node we're visiting
                 # is less than the distance of the node we're visiting on file
                 # replace that distance and push the node we're visiting into the priority queue
@@ -183,9 +185,8 @@ def remap_edges(edge_source, edge_target, geom_address, geom_array):
         key_type=types.int64,
         value_type=types.int64,
     )
-    node_coords = np.empty((int(len(edge_source) * 1.25), 2), np.double)
+    node_coords = np.empty((len(edge_source), 2), np.double)
     id = 0
-    print(f"Expected unique nodes: {len(edge_source)}")
     for i in range(len(edge_source)):
         edge_geom = geom_array[geom_address[i] : geom_address[i + 1], :]
         # source
@@ -204,7 +205,6 @@ def remap_edges(edge_source, edge_target, geom_address, geom_array):
             id += 1
         else:
             edge_target[i] = unordered_map.get(edge_target[i])
-    print(f"Actual unique nodes: {id}")
     return unordered_map, node_coords[: len(unordered_map)]
 
 
@@ -361,7 +361,7 @@ def build_grid_interpolate_(
         grid_points, k=1, distance_upper_bound=200, workers=-1
     )
     distances[distances == np.inf] = np.NaN
-    additional_costs = (distances / speed) / 60
+    additional_costs = 0 if speed is None else ((distances / speed) / 60)
     indices_flatten = indices.flatten()
 
     unvalid_indices = np.asarray(indices_flatten == len(costs)).nonzero()[0]
@@ -499,6 +499,7 @@ def compute_isochrone(
     speed,
     zoom: int = 10,
     return_network: bool = True,
+    use_distance: bool = False,
 ):
     """
     Compute isochrone for a given start vertices
@@ -526,7 +527,7 @@ def compute_isochrone(
         len(unordered_map), edges_source, edges_target, edges_cost, edges_reverse_cost
     )
     start_vertices_ids = np.array([unordered_map[v] for v in start_vertices])
-    distances = dijkstra(start_vertices_ids, adj_list, travel_time)
+    distances = dijkstra(start_vertices_ids, adj_list, travel_time, use_distance)
 
     # convert results to grid
     grid_data = network_to_grid(

@@ -97,19 +97,27 @@ class CRUDIsochrone:
             parkingAisle,driveway,pedestrian,
             footway,steps,track,bridleway,
             unknown
-        """
+        """.replace(
+            "\n", ""
+        ).replace(
+            " ", ""
+        )
 
         self.valid_classes_bicycle = """
             secondary,tertiary,residential,
             livingStreet,trunk,unclassified,
             parkingAisle,driveway,pedestrian,
             track,cycleway,bridleway,unknown
-        """
+        """.replace(
+            "\n", ""
+        ).replace(
+            " ", ""
+        )
 
     def read_network(
         self, db, routing_network: dict, obj_in: IIsochroneActiveMobility
     ) -> Any:
-        """Read relevant sub-network for Isochrone calculation from polars dataframe."""
+        """Read relevant sub-network for isochrone calculation from polars dataframe."""
 
         # Create input table for isochrone origin points
         input_table, num_points = self.create_input_table(db, obj_in)
@@ -127,8 +135,7 @@ class CRUDIsochrone:
                 (obj_in.travel_cost.speed * 1000) / 60
             )
         else:
-            # TODO Compute buffer distance for distance based isochrone
-            return None, None
+            buffer_dist = obj_in.travel_cost.max_distance
 
         # Identify H3_3 & H3_5 cells relevant to this isochrone calculation
         h3_3_cells = set()
@@ -222,11 +229,19 @@ class CRUDIsochrone:
         sub_network = sub_network.with_columns(pl.col("impedance_surface").fill_null(0))
 
         # Compute cost for each segment
-        sub_network = self.compute_segment_cost(
-            sub_network,
-            obj_in.routing_type,
-            obj_in.travel_cost.speed / 3.6,
-        )
+        if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
+            # If producing a travel time cost based isochrone, compute segment cost accordingly
+            sub_network = self.compute_segment_cost(
+                sub_network,
+                obj_in.routing_type,
+                obj_in.travel_cost.speed / 3.6,
+            )
+        else:
+            # If producing a distance cost based isochrone, use the segment length as cost
+            sub_network = sub_network.with_columns(
+                pl.col("length_m").alias("cost"),
+                pl.col("length_m").alias("reverse_cost"),
+            )
 
         # Select columns required for computing isochrone and convert to dictionary
         sub_network = sub_network.select(
@@ -340,6 +355,8 @@ class CRUDIsochrone:
             return None
 
     def save_result(self, db, obj_in: IIsochroneActiveMobility, shapes, network, grid):
+        """Save the result of the isochrone computation to the database."""
+
         if obj_in.isochrone_type == "polygon":
             # Save isochrone geometry data (shapes)
             shapes = shapes["incremental"]
@@ -368,7 +385,7 @@ class CRUDIsochrone:
                     ST_Transform(ST_SetSRID(ST_MakeLine(ARRAY[{points_string.rstrip(',')}]), 3857), 4326),
                     {cost}
                 ),"""
-                if i % batch_size == 0:
+                if i % batch_size == 0 or i == (len(network["features"]) - 1):
                     insert_string = f"""
                         INSERT INTO user_data.{obj_in.result_table} (layer_id, geom, float_attr1)
                         VALUES {insert_string.rstrip(",")};
@@ -406,21 +423,34 @@ class CRUDIsochrone:
         isochrone_network = None
         isochrone_shapes = None
         try:
+            is_travel_time_isochrone = (
+                type(obj_in.travel_cost) == TravelTimeCostActiveMobility
+            )
+
             isochrone_grid, isochrone_network = compute_isochrone(
                 edge_network_input=sub_routing_network,
                 start_vertices=origin_connector_ids,
-                travel_time=obj_in.travel_cost.max_traveltime,
-                speed=obj_in.travel_cost.speed / 3.6,
+                travel_time=obj_in.travel_cost.max_traveltime
+                if is_travel_time_isochrone
+                else obj_in.travel_cost.max_distance,
+                speed=obj_in.travel_cost.speed / 3.6
+                if is_travel_time_isochrone
+                else None,
                 zoom=12,
+                use_distance=(not is_travel_time_isochrone),
             )
             print("Computed isochrone grid & network.")
 
             if obj_in.isochrone_type == "polygon":
                 isochrone_shapes = generate_jsolines(
                     grid=isochrone_grid,
-                    travel_time=obj_in.travel_cost.max_traveltime,
+                    travel_time=obj_in.travel_cost.max_traveltime
+                    if is_travel_time_isochrone
+                    else obj_in.travel_cost.max_distance,
                     percentile=5,
-                    step=obj_in.travel_cost.traveltime_step,
+                    step=obj_in.travel_cost.traveltime_step
+                    if is_travel_time_isochrone
+                    else obj_in.travel_cost.distance_step,  # TODO Fix shape for distance cost based isochrones
                 )
                 print("Computed isochrone shapes.")
         except Exception as e:
