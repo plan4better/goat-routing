@@ -2,7 +2,7 @@ DROP TYPE IF EXISTS temporal.origin_segment;
 CREATE TYPE temporal.origin_segment AS (
     id int, class_ text, impedance_slope float8, impedance_slope_reverse float8,
     impedance_surface float8, source int, target int, tags text,
-    geom geometry, h3_3 int2, h3_5 int4, fraction float[], fraction_geom geometry[],
+    geom geometry, h3_3 int2, h3_6 int4, fraction float[], fraction_geom geometry[],
     point_id int2[], point_geom geometry[]
 );
 
@@ -12,7 +12,7 @@ CREATE TYPE temporal.artificial_segment AS (
     point_id int2, point_geom geometry, old_id int, id int, length_m float,
     length_3857 float, class_ text, impedance_slope float8, impedance_slope_reverse float8,
     impedance_surface float8, coordinates_3857 jsonb,
-    source int, target int, geom geometry, tags text, h3_3 int2, h3_5 int4
+    source int, target int, geom geometry, tags text, h3_3 int2, h3_6 int4
 );
 
 
@@ -52,7 +52,7 @@ BEGIN
                     o.id AS point_id, o.geom AS point_geom, o.buffer_geom AS point_buffer,
                     s.id, s.class_, s.impedance_slope, s.impedance_slope_reverse,
                     s.impedance_surface, s."source", s.target, s.tags, s.geom,
-                    s.h3_3, s.h3_5, ST_LineLocatePoint(s.geom, o.geom) AS fraction,
+                    s.h3_3, s.h3_6, ST_LineLocatePoint(s.geom, o.geom) AS fraction,
                     ST_ClosestPoint(s.geom, o.geom) AS fraction_geom
                 FROM basic.segment s, origin o
                 WHERE
@@ -65,7 +65,7 @@ BEGIN
                 bs.id, bs.class_, bs.impedance_slope,
                 bs.impedance_slope_reverse, bs.impedance_surface,
                 bs."source", bs.target, bs.tags,
-                bs.geom, bs.h3_3, bs.h3_5,
+                bs.geom, bs.h3_3, bs.h3_6,
                 ARRAY_AGG(bs.fraction) AS fraction,
                 ARRAY_AGG(bs.fraction_geom) AS fraction_geom,
                 ARRAY_AGG(bs.point_id) AS point_id,
@@ -74,7 +74,7 @@ BEGIN
             GROUP BY
                 bs.id, bs.class_, bs.impedance_slope, bs.impedance_slope_reverse,
                 bs.impedance_surface, bs."source", bs.target, bs.tags,
-                bs.geom, bs.h3_3, bs.h3_5;'
+                bs.geom, bs.h3_3, bs.h3_6;'
         , input_table, num_points, classes);
 	
 	LOOP
@@ -89,7 +89,7 @@ BEGIN
         artificial_segment.impedance_surface = origin_segment.impedance_surface;
         artificial_segment.tags = origin_segment.tags;
         artificial_segment.h3_3 = origin_segment.h3_3;
-        artificial_segment.h3_5 = origin_segment.h3_5;
+        artificial_segment.h3_6 = origin_segment.h3_6;
 
         -- Generate the first artifical segment for this origin segment
         artificial_segment.point_id = NULL;

@@ -2,7 +2,6 @@ import time
 import uuid
 from typing import Any
 
-import numpy as np
 import polars as pl
 
 from src.core.config import settings
@@ -15,7 +14,7 @@ from src.db.db import Database
 from src.schemas.isochrone import IIsochroneActiveMobility, TravelTimeCostActiveMobility
 
 segment_schema = {
-    "id": pl.Int32,
+    "id": pl.Int64,
     "length_m": pl.Float64,
     "length_3857": pl.Float64,
     "class_": pl.Utf8,
@@ -23,12 +22,45 @@ segment_schema = {
     "impedance_slope_reverse": pl.Float64,
     "impedance_surface": pl.Float32,
     "coordinates_3857": pl.Utf8,
-    "source": pl.Int32,
-    "target": pl.Int32,
+    "source": pl.Int64,
+    "target": pl.Int64,
     "tags": pl.Utf8,
     "h3_3": pl.Int32,
-    "h3_5": pl.Int32,
+    "h3_6": pl.Int32,
 }
+
+valid_walking_classes = [
+    "secondary",
+    "tertiary",
+    "residential",
+    "livingStreet",
+    "trunk",
+    "unclassified",
+    "parkingAisle",
+    "driveway",
+    "pedestrian",
+    "footway",
+    "steps",
+    "track",
+    "bridleway",
+    "unknown",
+]
+
+valid_bicycle_classes = [
+    "secondary",
+    "tertiary",
+    "residential",
+    "livingStreet",
+    "trunk",
+    "unclassified",
+    "parkingAisle",
+    "driveway",
+    "pedestrian",
+    "track",
+    "cycleway",
+    "bridleway",
+    "unknown",
+]
 
 
 class FetchRoutingNetwork:
@@ -69,7 +101,7 @@ class FetchRoutingNetwork:
                             id, length_m, length_3857,
                             class_, impedance_slope, impedance_slope_reverse,
                             impedance_surface, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                            source, target, CAST(tags AS TEXT) AS tags, h3_3, h3_5
+                            source, target, CAST(tags AS TEXT) AS tags, h3_3, h3_6
                         FROM basic.segment
                         WHERE h3_3 = {h3_index}
                     """,
@@ -90,30 +122,6 @@ class FetchRoutingNetwork:
 
 
 class CRUDIsochrone:
-    def __init__(self):
-        self.valid_classes_walking = """
-            secondary,tertiary,residential,
-            livingStreet,trunk,unclassified,
-            parkingAisle,driveway,pedestrian,
-            footway,steps,track,bridleway,
-            unknown
-        """.replace(
-            "\n", ""
-        ).replace(
-            " ", ""
-        )
-
-        self.valid_classes_bicycle = """
-            secondary,tertiary,residential,
-            livingStreet,trunk,unclassified,
-            parkingAisle,driveway,pedestrian,
-            track,cycleway,bridleway,unknown
-        """.replace(
-            "\n", ""
-        ).replace(
-            " ", ""
-        )
-
     def read_network(
         self, db, routing_network: dict, obj_in: IIsochroneActiveMobility
     ) -> Any:
@@ -124,12 +132,12 @@ class CRUDIsochrone:
 
         # Get valid segment classes based on transport mode
         valid_segment_classes = (
-            self.valid_classes_walking
+            valid_walking_classes
             if obj_in.routing_type == "walking"
-            else self.valid_classes_bicycle
+            else valid_bicycle_classes
         )
 
-        # Compute buffer distance for identifying relevant H3_5 cells
+        # Compute buffer distance for identifying relevant H3_6 cells
         if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
             buffer_dist = obj_in.travel_cost.max_traveltime * (
                 (obj_in.travel_cost.speed * 1000) / 60
@@ -137,38 +145,38 @@ class CRUDIsochrone:
         else:
             buffer_dist = obj_in.travel_cost.max_distance
 
-        # Identify H3_3 & H3_5 cells relevant to this isochrone calculation
+        # Identify H3_3 & H3_6 cells relevant to this isochrone calculation
         h3_3_cells = set()
-        h3_5_cells = set()
+        h3_6_cells = set()
 
         sql_get_relevant_cells = f"""
             WITH point AS (
-                SELECT geom FROM temporal.\"{input_table}\"
+                SELECT geom FROM temporal.\"{input_table}\" LIMIT {num_points}
             ),
             num_cells AS (
                 SELECT generate_series(0, CASE WHEN value < 1.0 THEN 0 ELSE ROUND(value)::int END) AS value
-                FROM (SELECT ({buffer_dist} / (h3_get_hexagon_edge_length_avg(5, 'm') * 2)) AS value) sub
+                FROM (SELECT ({buffer_dist} / (h3_get_hexagon_edge_length_avg(6, 'm') * 2)) AS value) sub
             ),
             cells AS (
-                SELECT DISTINCT h3_grid_ring_unsafe(h3_lat_lng_to_cell(point.geom::point, 5), sub.value) AS h3_index
+                SELECT DISTINCT h3_grid_ring_unsafe(h3_lat_lng_to_cell(point.geom::point, 6), sub.value) AS h3_index
                 FROM point,
                 LATERAL (SELECT * FROM num_cells) sub
             )
-            SELECT to_short_h3_3(h3_cell_to_parent(h3_index, 3)::bigint) AS h3_3, ARRAY_AGG(to_short_h3_5(h3_index::bigint)) AS h3_5
+            SELECT to_short_h3_3(h3_cell_to_parent(h3_index, 3)::bigint) AS h3_3, ARRAY_AGG(to_short_h3_6(h3_index::bigint)) AS h3_6
             FROM cells
             GROUP BY h3_3;
         """
         for h3_3_cell in db.select(sql_get_relevant_cells):
             h3_3_cells.add(h3_3_cell[0])
-            for h3_5_cell in h3_3_cell[1]:
-                h3_5_cells.add(h3_5_cell)
+            for h3_6_cell in h3_3_cell[1]:
+                h3_6_cells.add(h3_6_cell)
 
         # Get relevant segments & connectors
         sub_network = pl.DataFrame()
         for h3_3 in h3_3_cells:
             sub_df = routing_network[h3_3].filter(
-                pl.col("h3_5").is_in(h3_5_cells)
-                & pl.col("class_").is_in(valid_segment_classes.split(","))
+                pl.col("h3_6").is_in(h3_6_cells)
+                & pl.col("class_").is_in(valid_segment_classes)
             )
             if sub_network.width > 0:
                 sub_network.extend(sub_df)
@@ -177,6 +185,7 @@ class CRUDIsochrone:
 
         # Create necessary artifical segments and add them to our sub network
         origin_point_connectors = []
+        segments_to_discard = []
         sql_get_artificial_segments = f"""
             SELECT
                 point_id,
@@ -184,17 +193,17 @@ class CRUDIsochrone:
                 id, length_m, length_3857, class_, impedance_slope,
                 impedance_slope_reverse, impedance_surface,
                 CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                source, target, tags, h3_3, h3_5
+                source, target, tags, h3_3, h3_6
             FROM temporal.get_artificial_segments(
                 '{input_table}',
                 {num_points},
-                '{valid_segment_classes}'
+                '{",".join(valid_segment_classes)}'
             );
         """
         for a_seg in db.select(sql_get_artificial_segments):
             if a_seg[0] is not None:
                 origin_point_connectors.append(a_seg[10])
-                sub_network = sub_network.filter(pl.col("id") != a_seg[1])
+                segments_to_discard.append(a_seg[1])
 
             new_df = pl.DataFrame(
                 [
@@ -211,13 +220,16 @@ class CRUDIsochrone:
                         "target": a_seg[11],
                         "tags": a_seg[12],
                         "h3_3": a_seg[13],
-                        "h3_5": a_seg[14],
+                        "h3_6": a_seg[14],
                     }
                 ],
                 schema_overrides=segment_schema,
             )
             new_df = new_df.with_columns(pl.col("coordinates_3857").str.json_extract())
             sub_network.extend(new_df)
+
+        # Remove segments which are now replaced by artificial segments
+        sub_network = sub_network.filter(~pl.col("id").is_in(segments_to_discard))
 
         # TODO: We need to read the scenario network dynamically from DB if a scenario is selected.
 
@@ -243,28 +255,16 @@ class CRUDIsochrone:
                 pl.col("length_m").alias("reverse_cost"),
             )
 
-        # Select columns required for computing isochrone and convert to dictionary
-        sub_network = sub_network.select(
-            "id",
-            "source",
-            "target",
-            "cost",
-            "reverse_cost",
-            pl.col("length_3857").alias("length"),
-            pl.col("coordinates_3857").alias("geom"),
-        )
-        print(f"Segments in routable network: {sub_network.shape[0]}")
-        sub_network = sub_network.to_dict(as_series=False)
-
-        # Convert all columns to numpy arrays
-        sub_network["id"] = np.fromiter(sub_network["id"], dtype=np.int64)
-        sub_network["source"] = np.fromiter(sub_network["source"], dtype=np.int64)
-        sub_network["target"] = np.fromiter(sub_network["target"], dtype=np.int64)
-        sub_network["cost"] = np.fromiter(sub_network["cost"], dtype=np.double)
-        sub_network["reverse_cost"] = np.fromiter(
-            sub_network["reverse_cost"], dtype=np.double
-        )
-        sub_network["length"] = np.fromiter(sub_network["length"], dtype=np.double)
+        # Select columns required for computing isochrone and convert to dictionary of numpy arrays
+        sub_network = {
+            "id": sub_network.get_column("id").to_numpy().copy(),
+            "source": sub_network.get_column("source").to_numpy().copy(),
+            "target": sub_network.get_column("target").to_numpy().copy(),
+            "cost": sub_network.get_column("cost").to_numpy().copy(),
+            "reverse_cost": sub_network.get_column("reverse_cost").to_numpy().copy(),
+            "length": sub_network.get_column("length_3857").to_numpy().copy(),
+            "geom": sub_network.get_column("coordinates_3857").to_numpy().copy(),
+        }
 
         return sub_network, origin_point_connectors
 
@@ -399,6 +399,8 @@ class CRUDIsochrone:
     def run(self, routing_network: dict, obj_in: IIsochroneActiveMobility):
         """Compute isochrones for the given request parameters."""
 
+        total_start = time.time()
+
         # Read & process routing network to extract relevant sub-network
         start_time = time.time()
         db = Database(settings.POSTGRES_DATABASE_URI)
@@ -471,3 +473,5 @@ class CRUDIsochrone:
         finally:
             db.close()
         print(f"Result save time: {round(time.time() - start_time, 2)} sec")
+
+        print(f"Total time: {round(time.time() - total_start, 2)} sec")
