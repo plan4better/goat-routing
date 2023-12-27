@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-from pydantic import BaseSettings, HttpUrl, PostgresDsn, validator
+from pydantic import BaseSettings, PostgresDsn, validator
 
 
 class AsyncPostgresDsn(PostgresDsn):
@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     API_V2_STR: str = "/api/v2"
     PROJECT_NAME: Optional[str] = "GOAT Routing API"
 
+    NETWORK_REGION_TABLE = "temporal.network_region"
+
     POSTGRES_SERVER: str
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
@@ -30,7 +32,9 @@ class Settings(BaseSettings):
     ASYNC_SQLALCHEMY_DATABASE_URI: Optional[AsyncPostgresDsn] = None
 
     @validator("ASYNC_SQLALCHEMY_DATABASE_URI", pre=True)
-    def assemble_async_db_connection(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
+    def assemble_async_db_connection(
+        cls, v: Optional[str], values: Dict[str, Any]
+    ) -> Any:
         if isinstance(v, str):
             return v
         return AsyncPostgresDsn.build(

@@ -3,6 +3,7 @@ Translated from https://github.com/goat-community/goat/blob/0089611acacbebf4e297
 """
 
 import math
+
 import numpy as np
 from geopandas import GeoDataFrame
 from numba import njit
@@ -182,7 +183,15 @@ def ensureFractionIsNumber(frac, direction):
 
 @njit
 def calculate_jsolines(
-    surface, width, height, west, north, zoom, cutoffs, interpolation=True, web_mercator=True
+    surface,
+    width,
+    height,
+    west,
+    north,
+    zoom,
+    cutoffs,
+    interpolation=True,
+    web_mercator=True,
 ):
     geometries = []
     for _, cutoff in np.ndenumerate(cutoffs):
@@ -263,7 +272,9 @@ def calculate_jsolines(
                         )
                         break
                     xy = coordinate_from_pixel(
-                        [coord[0] + west, coord[1] + north], zoom=zoom, web_mercator=web_mercator
+                        [coord[0] + west, coord[1] + north],
+                        zoom=zoom,
+                        web_mercator=web_mercator,
                     )
                     coords.append(xy)
 
@@ -287,7 +298,9 @@ def calculate_jsolines(
         for hole in holes:
             # Only accept holes that are at least 2-dimensional.
             # Workaroudn (x+y) to avoid float to str type conversion in numba
-            vertices = list({(x + y) for x, y in hole[0]})
+            vertices = []
+            for x, y in hole[0]:
+                vertices.append((x + y))
 
             if len(vertices) >= 3:
                 # NB this is checking whether the first coordinate of the hole is inside
@@ -363,7 +376,9 @@ def jsolines(
     result = {}
     isochrone_shapes = []
     for isochrone in isochrone_multipolygon_coordinates:
-        isochrone_shapes.append(shape({"type": "MultiPolygon", "coordinates": isochrone}))
+        isochrone_shapes.append(
+            shape({"type": "MultiPolygon", "coordinates": isochrone})
+        )
 
     result["full"] = GeoDataFrame({"geometry": isochrone_shapes, "minute": cutoffs})
 
@@ -373,9 +388,13 @@ def jsolines(
             if i == 0:
                 isochrone_diff.append(isochrone_shapes[i])
             else:
-                isochrone_diff.append(isochrone_shapes[i].difference(isochrone_shapes[i - 1]))
+                isochrone_diff.append(
+                    isochrone_shapes[i].difference(isochrone_shapes[i - 1])
+                )
 
-        result["incremental"] = GeoDataFrame({"geometry": isochrone_diff, "minute": cutoffs})
+        result["incremental"] = GeoDataFrame(
+            {"geometry": isochrone_diff, "minute": cutoffs}
+        )
 
     crs = "EPSG:4326"
     if web_mercator:
@@ -386,7 +405,7 @@ def jsolines(
     return result
 
 
-def generate_jsolines(grid, travel_time, percentile):
+def generate_jsolines(grid, travel_time, percentile, step=1):
     """
     Generate the jsolines from the isochrones.
 
@@ -405,7 +424,7 @@ def generate_jsolines(grid, travel_time, percentile):
         grid["west"],
         grid["north"],
         grid["zoom"],
-        cutoffs=np.arange(1, travel_time + 1),
+        cutoffs=np.arange(start=1, stop=(travel_time + 1), step=step),
         return_incremental=True,
     )
     return isochrones

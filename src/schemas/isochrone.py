@@ -1,6 +1,7 @@
 from enum import Enum
-from uuid import UUID
 from typing import List
+from uuid import UUID
+
 from pydantic import BaseModel, Field, validator
 
 
@@ -138,7 +139,7 @@ class IIsochroneActiveMobility(BaseModel):
                 "The polygon difference must be set if the isochrone type is polygon."
             )
         return v
-    
+
     # Check that polygon difference is not specified if isochrone type is not polygon
     @validator("polygon_difference", pre=True, always=True)
     def check_polygon_difference_not_specified(cls, v, values):

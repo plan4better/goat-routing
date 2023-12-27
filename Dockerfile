@@ -50,5 +50,4 @@ RUN bash -c "if [ $INSTALL_DEV == 'True' ] ; then apt-get update && apt-get inst
 RUN bash -c "if [ $INSTALL_DEV == 'True' ] ; then poetry install --no-root ; else poetry install --no-root --only main ; fi"
 COPY . /app
 
-
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "5005"]

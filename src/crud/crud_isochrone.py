@@ -1,191 +1,477 @@
+import time
+import uuid
 from typing import Any
-import numpy as np
-from geopandas import GeoDataFrame
-from pandas.io.sql import read_sql
-from shapely.geometry import Point
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql import text
 
+import polars as pl
+
+from src.core.config import settings
 from src.core.isochrone import compute_isochrone
-from src.db import models
-from src.db.session import legacy_engine
-from src.schemas.isochrone import (
-    IIsochroneActiveMobility,
-    IsochroneMode,
-    IsochroneStartingPointCoord,
-    IsochroneTypeEnum,
-)
+from src.core.jsoline import generate_jsolines
+from src.db.db import Database
+
+# from src.db import models
+# from src.db.session import legacy_engine
+from src.schemas.isochrone import IIsochroneActiveMobility, TravelTimeCostActiveMobility
+
+segment_schema = {
+    "id": pl.Int64,
+    "length_m": pl.Float64,
+    "length_3857": pl.Float64,
+    "class_": pl.Utf8,
+    "impedance_slope": pl.Float64,
+    "impedance_slope_reverse": pl.Float64,
+    "impedance_surface": pl.Float32,
+    "coordinates_3857": pl.Utf8,
+    "source": pl.Int64,
+    "target": pl.Int64,
+    "tags": pl.Utf8,
+    "h3_3": pl.Int32,
+    "h3_6": pl.Int32,
+}
+
+valid_walking_classes = [
+    "secondary",
+    "tertiary",
+    "residential",
+    "livingStreet",
+    "trunk",
+    "unclassified",
+    "parkingAisle",
+    "driveway",
+    "pedestrian",
+    "footway",
+    "steps",
+    "track",
+    "bridleway",
+    "unknown",
+]
+
+valid_bicycle_classes = [
+    "secondary",
+    "tertiary",
+    "residential",
+    "livingStreet",
+    "trunk",
+    "unclassified",
+    "parkingAisle",
+    "driveway",
+    "pedestrian",
+    "track",
+    "cycleway",
+    "bridleway",
+    "unknown",
+]
+
+
+class FetchRoutingNetwork:
+    def fetch(self):
+        """Fetch routing network (processed segments) and load into memory."""
+
+        start_time = time.time()
+
+        # Get network H3 cells
+        h3_3_grid = []
+        db = Database(settings.POSTGRES_DATABASE_URI)
+        try:
+            sql_get_h3_3_grid = f"""
+                WITH region AS (
+                    SELECT geom from {settings.NETWORK_REGION_TABLE}
+                )
+                SELECT g.h3_short FROM region r,
+                LATERAL temporal.fill_polygon_h3_3(r.geom) g;
+            """
+            for h3_index in db.select(sql_get_h3_3_grid):
+                if h3_index[0] in [8077]:
+                    h3_3_grid.append(h3_index[0])
+        except Exception as e:
+            print(e)
+        finally:
+            db.conn.close()
+
+        # Load segments into polars data frames
+        segments_df = {}
+        df_size = 0.0
+        try:
+            for h3_index in h3_3_grid:
+                print(f"Loading network for H3 cell {h3_index}.")
+
+                segments_df[h3_index] = pl.read_database_uri(
+                    query=f"""
+                        SELECT
+                            id, length_m, length_3857,
+                            class_, impedance_slope, impedance_slope_reverse,
+                            impedance_surface, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
+                            source, target, CAST(tags AS TEXT) AS tags, h3_3, h3_6
+                        FROM basic.segment
+                        WHERE h3_3 = {h3_index}
+                    """,
+                    uri=settings.POSTGRES_DATABASE_URI,
+                    schema_overrides=segment_schema,
+                )
+                segments_df[h3_index] = segments_df[h3_index].with_columns(
+                    pl.col("coordinates_3857").str.json_extract()
+                )
+                df_size += segments_df[h3_index].estimated_size("gb")
+        except Exception as e:
+            print(e)
+
+        print(f"Network load time: {round((time.time() - start_time) / 60, 1)} min")
+        print(f"Network in-memory size: {round(df_size, 1)} GB")
+
+        return segments_df
 
 
 class CRUDIsochrone:
-    def init_network():
-        #TODO: Add function here to read the data from database into polars.
-        # We should save the geofence_active_mobility in the goat database and read the network for the respective area in chunks of h3 cells.
-        # We could have the table dynamically defined in the config.py so we could ready other (smaller) extents for testing.
-        # From what we know at the moment we should have one polars df for each h3-res3 cell.
-        pass
-
-
     def read_network(
-        self, db, obj_in: IIsochroneActiveMobility
+        self, db, routing_network: dict, obj_in: IIsochroneActiveMobility
     ) -> Any:
-        # TODO: Once the data is inside polary we can start with writing the functions to read from polary 
-        # The first thing is that we need to identify the h3-res3 that are needed for the isochrone calculation.
-        # One idea that can work is that we get the h3-res5 grids for the starting points + a buffer distance that is defined
-        # as flying-bird distance from the max travel time and speed.
-        # There are functions in h3 that can get the neighbors of a given h3 cell and we can derive the size of the respective grid resolution with another function.
-        # After we have the h3-res5 cells we can get the h3-res3 parent cells.
-        # With both h3-res3 and h3-res5 cells we can query the polars df and get the data for the respective cells without doing any spatial intersections.
+        """Read relevant sub-network for isochrone calculation from polars dataframe."""
+
+        # Create input table for isochrone origin points
+        input_table, num_points = self.create_input_table(db, obj_in)
+
+        # Get valid segment classes based on transport mode
+        valid_segment_classes = (
+            valid_walking_classes
+            if obj_in.routing_type == "walking"
+            else valid_bicycle_classes
+        )
+
+        # Compute buffer distance for identifying relevant H3_6 cells
+        if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
+            buffer_dist = obj_in.travel_cost.max_traveltime * (
+                (obj_in.travel_cost.speed * 1000) / 60
+            )
+        else:
+            buffer_dist = obj_in.travel_cost.max_distance
+
+        # Identify H3_3 & H3_6 cells relevant to this isochrone calculation
+        h3_3_cells = set()
+        h3_6_cells = set()
+
+        sql_get_relevant_cells = f"""
+            WITH point AS (
+                SELECT geom FROM temporal.\"{input_table}\" LIMIT {num_points}
+            ),
+            num_cells AS (
+                SELECT generate_series(0, CASE WHEN value < 1.0 THEN 0 ELSE ROUND(value)::int END) AS value
+                FROM (SELECT ({buffer_dist} / (h3_get_hexagon_edge_length_avg(6, 'm') * 2)) AS value) sub
+            ),
+            cells AS (
+                SELECT DISTINCT h3_grid_ring_unsafe(h3_lat_lng_to_cell(point.geom::point, 6), sub.value) AS h3_index
+                FROM point,
+                LATERAL (SELECT * FROM num_cells) sub
+            )
+            SELECT to_short_h3_3(h3_cell_to_parent(h3_index, 3)::bigint) AS h3_3, ARRAY_AGG(to_short_h3_6(h3_index::bigint)) AS h3_6
+            FROM cells
+            GROUP BY h3_3;
+        """
+        for h3_3_cell in db.select(sql_get_relevant_cells):
+            h3_3_cells.add(h3_3_cell[0])
+            for h3_6_cell in h3_3_cell[1]:
+                h3_6_cells.add(h3_6_cell)
+
+        # Get relevant segments & connectors
+        sub_network = pl.DataFrame()
+        for h3_3 in h3_3_cells:
+            sub_df = routing_network[h3_3].filter(
+                pl.col("h3_6").is_in(h3_6_cells)
+                & pl.col("class_").is_in(valid_segment_classes)
+            )
+            if sub_network.width > 0:
+                sub_network.extend(sub_df)
+            else:
+                sub_network = sub_df
+
+        # Create necessary artifical segments and add them to our sub network
+        origin_point_connectors = []
+        segments_to_discard = []
+        sql_get_artificial_segments = f"""
+            SELECT
+                point_id,
+                old_id,
+                id, length_m, length_3857, class_, impedance_slope,
+                impedance_slope_reverse, impedance_surface,
+                CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
+                source, target, tags, h3_3, h3_6
+            FROM temporal.get_artificial_segments(
+                '{input_table}',
+                {num_points},
+                '{",".join(valid_segment_classes)}'
+            );
+        """
+        for a_seg in db.select(sql_get_artificial_segments):
+            if a_seg[0] is not None:
+                origin_point_connectors.append(a_seg[10])
+                segments_to_discard.append(a_seg[1])
+
+            new_df = pl.DataFrame(
+                [
+                    {
+                        "id": a_seg[2],
+                        "length_m": a_seg[3],
+                        "length_3857": a_seg[4],
+                        "class_": a_seg[5],
+                        "impedance_slope": a_seg[6],
+                        "impedance_slope_reverse": a_seg[7],
+                        "impedance_surface": a_seg[8],
+                        "coordinates_3857": a_seg[9],
+                        "source": a_seg[10],
+                        "target": a_seg[11],
+                        "tags": a_seg[12],
+                        "h3_3": a_seg[13],
+                        "h3_6": a_seg[14],
+                    }
+                ],
+                schema_overrides=segment_schema,
+            )
+            new_df = new_df.with_columns(pl.col("coordinates_3857").str.json_extract())
+            sub_network.extend(new_df)
+
+        # Remove segments which are now replaced by artificial segments
+        sub_network = sub_network.filter(~pl.col("id").is_in(segments_to_discard))
 
         # TODO: We need to read the scenario network dynamically from DB if a scenario is selected.
-        sql_text = ""
-        if isochrone_type == IsochroneTypeEnum.single.value:
-            sql_text = """SELECT id, source, target, cost, reverse_cost, coordinates_3857 as geom, length_3857 AS length, starting_ids, starting_geoms
-            FROM basic.fetch_network_routing(ARRAY[:x],ARRAY[:y], :max_cutoff, :speed, :modus, :scenario_id, :routing_profile)
-            """
-        elif isochrone_type == IsochroneTypeEnum.multi.value:
-            sql_text = """SELECT id, source, target, cost, reverse_cost, coordinates_3857 as geom, length_3857 AS length, starting_ids, starting_geoms
-            FROM basic.fetch_network_routing_multi(:x,:y, :max_cutoff, :speed, :modus, :scenario_id, :routing_profile)
-            """
-        elif isochrone_type == IsochroneTypeEnum.heatmap.value:
-            sql_text = """
-            SELECT id, source, target, cost, reverse_cost, coordinates_3857 as geom, length_3857 AS length, starting_ids, starting_geoms
-            FROM basic.fetch_network_routing_heatmap(:x,:y, :max_cutoff, :speed, :modus, :scenario_id, :routing_profile, :table_prefix)
-            """
 
-        read_network_sql = text(sql_text)
-        routing_profile = None
-        if obj_in.mode.value == IsochroneMode.WALKING.value:
-            routing_profile = obj_in.mode.value + "_" + obj_in.settings.walking_profile.value
-
-        if obj_in.mode.value == IsochroneMode.CYCLING.value:
-            routing_profile = obj_in.mode.value + "_" + obj_in.settings.cycling_profile.value
-
-        x = y = None
-        if (
-            isochrone_type == IsochroneTypeEnum.multi.value
-            or isochrone_type == IsochroneTypeEnum.heatmap.value
-        ):
-            if isinstance(obj_in.starting_point.input[0], IsochroneStartingPointCoord):
-                x = [point.lon for point in obj_in.starting_point.input]
-                y = [point.lat for point in obj_in.starting_point.input]
-            else:
-                starting_points = self.starting_points_opportunities(current_user, db, obj_in)
-                x = starting_points[0][0]
-                y = starting_points[0][1]
-        else:
-            x = obj_in.starting_point.input[0].lon
-            y = obj_in.starting_point.input[0].lat
-
-        edges_network = read_sql(
-            read_network_sql,
-            legacy_engine,
-            params={
-                "x": x,
-                "y": y,
-                "max_cutoff": obj_in.settings.travel_time * 60,  # in seconds
-                "speed": obj_in.settings.speed / 3.6,
-                "modus": obj_in.scenario.modus.value,
-                "scenario_id": obj_in.scenario.id,
-                "routing_profile": routing_profile,
-                "table_prefix": table_prefix,
-            },
+        # Replace all NULL values in the impedance columns with 0
+        sub_network = sub_network.with_columns(pl.col("impedance_slope").fill_null(0))
+        sub_network = sub_network.with_columns(
+            pl.col("impedance_slope_reverse").fill_null(0)
         )
-        starting_ids = edges_network.iloc[0].starting_ids
-        if len(obj_in.starting_point.input) == 1 and isinstance(
-            obj_in.starting_point.input[0], IsochroneStartingPointCoord
-        ):
-            starting_point_geom = str(
-                GeoDataFrame(
-                    {"geometry": Point(edges_network.iloc[-1:]["geom"].values[0][0])},
-                    crs="EPSG:3857",
-                    index=[0],
+        sub_network = sub_network.with_columns(pl.col("impedance_surface").fill_null(0))
+
+        # Compute cost for each segment
+        if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
+            # If producing a travel time cost based isochrone, compute segment cost accordingly
+            sub_network = self.compute_segment_cost(
+                sub_network,
+                obj_in.routing_type,
+                obj_in.travel_cost.speed / 3.6,
+            )
+        else:
+            # If producing a distance cost based isochrone, use the segment length as cost
+            sub_network = sub_network.with_columns(
+                pl.col("length_m").alias("cost"),
+                pl.col("length_m").alias("reverse_cost"),
+            )
+
+        # Select columns required for computing isochrone and convert to dictionary of numpy arrays
+        sub_network = {
+            "id": sub_network.get_column("id").to_numpy().copy(),
+            "source": sub_network.get_column("source").to_numpy().copy(),
+            "target": sub_network.get_column("target").to_numpy().copy(),
+            "cost": sub_network.get_column("cost").to_numpy().copy(),
+            "reverse_cost": sub_network.get_column("reverse_cost").to_numpy().copy(),
+            "length": sub_network.get_column("length_3857").to_numpy().copy(),
+            "geom": sub_network.get_column("coordinates_3857").to_numpy().copy(),
+        }
+
+        return sub_network, origin_point_connectors
+
+    def create_input_table(self, db, obj_in: IIsochroneActiveMobility):
+        """Create the input table for the isochrone calculation."""
+
+        # Generate random table name
+        table_name = str(uuid.uuid4()).replace("-", "_")
+
+        # Create temporary table for storing the isochrone input
+        db.perform(
+            f"""
+                CREATE TABLE temporal.\"{table_name}\" (
+                    id serial PRIMARY KEY,
+                    geom geometry(Point, 4326)
+                );
+            """
+        )
+
+        # Insert the isochrone input into the temporary table
+        for i in range(len(obj_in.starting_points.latitude)):
+            latitude = obj_in.starting_points.latitude[i]
+            longitude = obj_in.starting_points.longitude[i]
+            db.perform(
+                f"""
+                    INSERT INTO temporal.\"{table_name}\" (geom)
+                    VALUES (ST_SetSRID(ST_MakePoint({latitude}, {longitude}), 4326));
+                """
+            )
+
+        return table_name, len(obj_in.starting_points.latitude)
+
+    def compute_segment_cost(self, sub_network, mode, speed):
+        """Compute the cost of a segment based on the mode, speed, impedance, etc."""
+
+        if mode == "walking":
+            return sub_network.with_columns(
+                (pl.col("length_m") / speed).alias("cost"),
+                (pl.col("length_m") / speed).alias("reverse_cost"),
+            )
+        elif mode == "bicycle":
+            return sub_network.with_columns(
+                pl.when(pl.col("class_") != "pedestrian")
+                .then(
+                    (
+                        pl.col("length_m")
+                        * (1 + pl.col("impedance_slope") + pl.col("impedance_surface"))
+                    )
+                    / speed
                 )
-                .to_crs("EPSG:4326")
-                .to_wkt()["geometry"]
-                .iloc[0]
+                .otherwise(
+                    pl.col("length_m") / speed
+                )  # This calculation is invoked when the segment class requires cyclists to walk their bicycle
+                .alias("cost"),
+                pl.when(pl.col("class_") != "pedestrian")
+                .then(
+                    (
+                        pl.col("length_m")
+                        * (
+                            1
+                            + pl.col("impedance_slope_reverse")
+                            + pl.col("impedance_surface")
+                        )
+                    )
+                    / speed
+                )
+                .otherwise(
+                    pl.col("length_m") / speed
+                )  # This calculation is invoked when the segment class requires cyclists to walk their bicycle
+                .alias("reverse_cost"),
+            )
+        elif mode == "pedelec":
+            return sub_network.with_columns(
+                pl.when(pl.col("class_") != "pedestrian")
+                .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
+                .otherwise(
+                    pl.col("length_m") / speed
+                )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
+                .alias("cost"),
+                pl.when(pl.col("class_") != "pedestrian")
+                .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
+                .otherwise(
+                    pl.col("length_m") / speed
+                )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
+                .alias("reverse_cost"),
             )
         else:
-            starting_point_geom = str(edges_network["starting_geoms"].iloc[0])
+            return None
 
-        edges_network = edges_network.drop(["starting_ids", "starting_geoms"], axis=1)
+    def save_result(self, db, obj_in: IIsochroneActiveMobility, shapes, network, grid):
+        """Save the result of the isochrone computation to the database."""
 
-        if (
-            isochrone_type == IsochroneTypeEnum.single.value
-            or isochrone_type == IsochroneTypeEnum.multi.value
-        ):
-            obj_starting_point = models.IsochroneCalculation(
-                calculation_type=isochrone_type,
-                user_id=current_user.id,
-                scenario_id=None if obj_in.scenario.id == 0 else obj_in.scenario.id,
-                starting_point=starting_point_geom,
-                routing_profile=routing_profile,
-                speed=obj_in.settings.speed,
-                modus=obj_in.scenario.modus.value,
-                parent_id=None,
-            )
-
-            db.add(obj_starting_point)
-            db.commit()
-
-        # return edges_network and obj_starting_point
-        edges_network.astype(
-            {
-                "id": np.int64,
-                "source": np.int64,
-                "target": np.int64,
-                "cost": np.double,
-                "reverse_cost": np.double,
-                "length": np.double,
-            }
-        )
-        return edges_network, starting_ids, starting_point_geom
-
-
-    def calculate(
-        self, db: AsyncSession, obj_in: IsochroneDTO, current_user: models.User, study_area_bounds
-    ) -> Any:
-        """
-        Calculate the isochrone for a given location and time
-        """
-        grid = None
-        result = None
-        network = None
-        if obj_in.settings.travel_time is not None:
+        if obj_in.isochrone_type == "polygon":
+            # Save isochrone geometry data (shapes)
+            shapes = shapes["incremental"]
+            insert_string = ""
+            for i in shapes.index:
+                geom = shapes["geometry"][i]
+                minute = shapes["minute"][i]
+                insert_string += f"('{obj_in.layer_id}', ST_SetSRID(ST_GeomFromText('{geom}'), 4326), {minute}),"
+            insert_string = f"""
+                INSERT INTO user_data.{obj_in.result_table} (layer_id, geom, integer_attr1)
+                VALUES {insert_string.rstrip(",")};
+            """
+            db.perform(insert_string)
+        elif obj_in.isochrone_type == "network":
+            # Save isochrone network data
+            batch_size = 1000
+            insert_string = ""
+            for i in range(0, len(network["features"])):
+                coordinates = network["features"][i]["geometry"]["coordinates"]
+                cost = network["features"][i]["properties"]["cost"]
+                points_string = ""
+                for pair in coordinates:
+                    points_string += f"ST_MakePoint({pair[0]}, {pair[1]}),"
+                insert_string += f"""(
+                    '{obj_in.layer_id}',
+                    ST_Transform(ST_SetSRID(ST_MakeLine(ARRAY[{points_string.rstrip(',')}]), 3857), 4326),
+                    {cost}
+                ),"""
+                if i % batch_size == 0 or i == (len(network["features"]) - 1):
+                    insert_string = f"""
+                        INSERT INTO user_data.{obj_in.result_table} (layer_id, geom, float_attr1)
+                        VALUES {insert_string.rstrip(",")};
+                    """
+                    db.perform(insert_string)
+                    insert_string = ""
+        else:
+            # Save isochrone grid data
             pass
 
-        if len(obj_in.starting_point.input) == 1 and isinstance(
-            obj_in.starting_point.input[0], IsochroneStartingPointCoord
-        ):
-            isochrone_type = IsochroneTypeEnum.single.value
-        else:
-            isochrone_type = IsochroneTypeEnum.multi.value
+    def run(self, routing_network: dict, obj_in: IIsochroneActiveMobility):
+        """Compute isochrones for the given request parameters."""
 
-        # Read network from in memory DB
-        network, starting_ids, starting_point_geom = self.read_network(
-            db, obj_in, current_user, isochrone_type
-        )
-        network = network.iloc[1:, :]
-        grid, network = compute_isochrone(
-            network,
-            starting_ids,
-            obj_in.settings.travel_time,
-            obj_in.settings.speed / 3.6,
-            obj_in.output.resolution,
-        )
+        total_start = time.time()
 
-        # TODO: The idea is to generate here different return types
-        #Network: return the reached network edges with the respective travel times
-        #Polygon: return the Jsoline polygon (use function from jsoline)
-        #Grid: return the traveltime grid
+        # Read & process routing network to extract relevant sub-network
+        start_time = time.time()
+        db = Database(settings.POSTGRES_DATABASE_URI)
+        sub_routing_network = None
+        origin_connector_ids = None
+        try:
+            sub_routing_network, origin_connector_ids = self.read_network(
+                db,
+                routing_network,
+                obj_in,
+            )
+        except Exception as e:
+            print(e)
+            raise e  # TODO Return error status/message instead
+        finally:
+            db.close()
+        print(f"Network read time: {round(time.time() - start_time, 2)} sec")
 
-        return result
+        # Compute isochrone utilizing processed sub-network
+        start_time = time.time()
+        isochrone_grid = None
+        isochrone_network = None
+        isochrone_shapes = None
+        try:
+            is_travel_time_isochrone = (
+                type(obj_in.travel_cost) == TravelTimeCostActiveMobility
+            )
 
-    def save_result():
-        #TODO: The results should be saved to the user_data database. Depending on the result type we need a fast method to save the data.
-        # It could be faster to avoid saving the data in a geospatial format and just save the data as a list of coordinates first into a temp table.
-        # In that case we can make use of more performant connectors such as ADBC. We can then convert the data to valid geometries inside the database.
-        pass
+            isochrone_grid, isochrone_network = compute_isochrone(
+                edge_network_input=sub_routing_network,
+                start_vertices=origin_connector_ids,
+                travel_time=obj_in.travel_cost.max_traveltime
+                if is_travel_time_isochrone
+                else obj_in.travel_cost.max_distance,
+                speed=obj_in.travel_cost.speed / 3.6
+                if is_travel_time_isochrone
+                else None,
+                zoom=12,
+                use_distance=(not is_travel_time_isochrone),
+            )
+            print("Computed isochrone grid & network.")
 
+            if obj_in.isochrone_type == "polygon":
+                isochrone_shapes = generate_jsolines(
+                    grid=isochrone_grid,
+                    travel_time=obj_in.travel_cost.max_traveltime
+                    if is_travel_time_isochrone
+                    else obj_in.travel_cost.max_distance,
+                    percentile=5,
+                    step=obj_in.travel_cost.traveltime_step
+                    if is_travel_time_isochrone
+                    else obj_in.travel_cost.distance_step,  # TODO Fix shape for distance cost based isochrones
+                )
+                print("Computed isochrone shapes.")
+        except Exception as e:
+            print(e)
+            raise e  # TODO Return error status/message instead
+        print(f"Isochrone computation time: {round(time.time() - start_time, 2)} sec")
 
-isochrone = CRUDIsochrone()
+        # Write output of isochrone computation to database
+        start_time = time.time()
+        db = Database(settings.POSTGRES_DATABASE_URI)
+        try:
+            self.save_result(
+                db, obj_in, isochrone_shapes, isochrone_network, isochrone_grid
+            )
+        except Exception as e:
+            print(e)
+            raise e  # TODO Return error status/message instead
+        finally:
+            db.close()
+        print(f"Result save time: {round(time.time() - start_time, 2)} sec")
+
+        print(f"Total time: {round(time.time() - total_start, 2)} sec")
