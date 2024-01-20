@@ -17,6 +17,7 @@ services:
     volumes:
       - .:/app
     ports:
-      - "5002:5000"
+      - "6000:6000"
+      - "8000:8000"
     networks:
       proxy:
