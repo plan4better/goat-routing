@@ -4,11 +4,13 @@ from typing import Any
 
 import polars as pl
 from redis import Redis
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import settings
 from src.core.isochrone import compute_isochrone
 from src.core.jsoline import generate_jsolines
+from src.schemas.error import DisconnectedOriginError
 from src.schemas.isochrone import IIsochroneActiveMobility, TravelTimeCostActiveMobility
 from src.schemas.status import ProcessingStatus
 
@@ -237,6 +239,11 @@ class CRUDIsochrone:
             new_df = new_df.with_columns(pl.col("coordinates_3857").str.json_extract())
             sub_network.extend(new_df)
 
+        if len(origin_point_connectors) == 0:
+            raise DisconnectedOriginError(
+                "Starting point(s) are disconnected from the street network."
+            )
+
         # Remove segments which are now replaced by artificial segments
         sub_network = sub_network.filter(~pl.col("id").is_in(segments_to_discard))
 
@@ -432,9 +439,15 @@ class CRUDIsochrone:
                 obj_in,
             )
         except Exception as e:
-            print(e)
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
-            raise e  # TODO Return error status/message instead
+            if type(e) == SQLAlchemyError:
+                await self.db_connection.rollback()
+            elif type(e) == DisconnectedOriginError:
+                self.redis.set(
+                    str(obj_in.layer_id), ProcessingStatus.disconnected_origin.value
+                )
+            print(e)
+            return
         print(f"Network read time: {round(time.time() - start_time, 2)} sec")
 
         # Compute isochrone utilizing processed sub-network
@@ -474,9 +487,9 @@ class CRUDIsochrone:
                 )
                 print("Computed isochrone shapes.")
         except Exception as e:
-            print(e)
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
-            raise e  # TODO Return error status/message instead
+            print(e)
+            return
         print(f"Isochrone computation time: {round(time.time() - start_time, 2)} sec")
 
         # Write output of isochrone computation to database
@@ -486,9 +499,11 @@ class CRUDIsochrone:
                 obj_in, isochrone_shapes, isochrone_network, isochrone_grid
             )
         except Exception as e:
-            print(e)
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
-            raise e  # TODO Return error status/message instead
+            if type(e) == SQLAlchemyError:
+                await self.db_connection.rollback()
+            print(e)
+            return
         print(f"Result save time: {round(time.time() - start_time, 2)} sec")
 
         print(f"Total time: {round(time.time() - total_start, 2)} sec")

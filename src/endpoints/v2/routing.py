@@ -66,6 +66,15 @@ async def compute_active_mobility_isochrone(
             },
             status_code=201,
         )
+    elif processing_status == ProcessingStatus.disconnected_origin.value:
+        # Isochrone computation failed
+        return JSONResponse(
+            content={
+                "result": processing_status,
+                "message": "Starting point(s) are disconnected from the street network.",
+            },
+            status_code=400,
+        )
     else:
         # Isochrone computation failed
         return JSONResponse(
