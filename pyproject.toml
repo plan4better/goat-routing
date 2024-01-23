@@ -51,6 +51,8 @@ shapely = "^2.0.2"
 asyncio = "^3.4.3"
 connectorx = "^0.3.2"
 pyarrow = "^14.0.1"
+celery = "^5.3.6"
+redis = "^5.0.1"
 
 
 [tool.poetry.group.dev.dependencies]

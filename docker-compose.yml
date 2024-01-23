@@ -21,3 +21,29 @@ services:
       - "8000:8000"
     networks:
       proxy:
+
+  rabbitmq:
+    image: rabbitmq:management
+    ports:
+      - 5672:5672
+      - 15672:15672
+    networks:
+      proxy:
+
+  redis:
+    image: redis:latest
+    networks:
+      proxy:
+
+  celery-worker:
+    build: .
+    command: celery -A src.core.worker worker --loglevel=info
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    depends_on:
+      - rabbitmq
+      - redis
+    networks:
+      proxy:

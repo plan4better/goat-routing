@@ -3,15 +3,14 @@ import uuid
 from typing import Any
 
 import polars as pl
-
-# from src.db import models
-# from src.db.session import legacy_engine
+from redis import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import settings
 from src.core.isochrone import compute_isochrone
 from src.core.jsoline import generate_jsolines
 from src.schemas.isochrone import IIsochroneActiveMobility, TravelTimeCostActiveMobility
+from src.schemas.status import ProcessingStatus
 
 segment_schema = {
     "id": pl.Int64,
@@ -84,8 +83,7 @@ class FetchRoutingNetwork:
             """
             result = (await self.db_connection.execute(sql_get_h3_3_grid)).fetchall()
             for h3_index in result:
-                if h3_index[0] in [8077]:
-                    h3_3_grid.append(h3_index[0])
+                h3_3_grid.append(h3_index[0])
         except Exception as e:
             print(e)
             # TODO Throw appropriate exception
@@ -124,8 +122,10 @@ class FetchRoutingNetwork:
 
 
 class CRUDIsochrone:
-    def __init__(self, db_connection: AsyncSession):
+    def __init__(self, db_connection: AsyncSession, redis: Redis) -> None:
         self.db_connection = db_connection
+        self.redis = redis
+        self.routing_network = None
 
     async def read_network(
         self, routing_network: dict, obj_in: IIsochroneActiveMobility
@@ -407,10 +407,20 @@ class CRUDIsochrone:
             # Save isochrone grid data
             pass
 
-    async def run(self, routing_network: dict, obj_in: IIsochroneActiveMobility):
+    async def run(
+        self,
+        obj_in: IIsochroneActiveMobility,
+    ):
         """Compute isochrones for the given request parameters."""
 
+        # Fetch routing network (processed segments) and load into memory
+        if self.routing_network is None:
+            self.routing_network = await FetchRoutingNetwork(self.db_connection).fetch()
+        routing_network = self.routing_network
+
         total_start = time.time()
+
+        obj_in = IIsochroneActiveMobility(**obj_in)
 
         # Read & process routing network to extract relevant sub-network
         start_time = time.time()
@@ -423,6 +433,7 @@ class CRUDIsochrone:
             )
         except Exception as e:
             print(e)
+            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             raise e  # TODO Return error status/message instead
         print(f"Network read time: {round(time.time() - start_time, 2)} sec")
 
@@ -464,6 +475,7 @@ class CRUDIsochrone:
                 print("Computed isochrone shapes.")
         except Exception as e:
             print(e)
+            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             raise e  # TODO Return error status/message instead
         print(f"Isochrone computation time: {round(time.time() - start_time, 2)} sec")
 
@@ -475,7 +487,10 @@ class CRUDIsochrone:
             )
         except Exception as e:
             print(e)
+            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             raise e  # TODO Return error status/message instead
         print(f"Result save time: {round(time.time() - start_time, 2)} sec")
 
         print(f"Total time: {round(time.time() - total_start, 2)} sec")
+
+        self.redis.set(str(obj_in.layer_id), ProcessingStatus.success.value)

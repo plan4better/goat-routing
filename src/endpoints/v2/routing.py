@@ -1,53 +1,29 @@
-# Standard Libraries
+import json
 
-# Third-party Libraries
-
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
+from redis import Redis
 
-# Project-specific Modules
-from src.crud.crud_isochrone import CRUDIsochrone, FetchRoutingNetwork
-from src.db.session import async_session
+from src.core.config import settings
+from src.core.worker import run_isochrone
 from src.schemas.isochrone import IIsochroneActiveMobility
 from src.schemas.isochrone import request_examples as active_mobility_request_examples
+from src.schemas.status import ProcessingStatus
 
 router = APIRouter()
-routing_network: dict = None
-
-
-async def get_db_connection():
-    """Manages a shared object for an async database connection."""
-    async with async_session() as session:
-        yield session
-
-
-async def get_routing_network(
-    database_connection: AsyncSession = Depends(get_db_connection),
-):
-    """Manages a shared object for our in-memory routing network."""
-
-    # Initialize routing network on startup
-    global routing_network
-    routing_network = (
-        await FetchRoutingNetwork(database_connection).fetch()
-        if routing_network is None
-        else routing_network
-    )
-
-    return routing_network
+redis = Redis(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB,
+)
 
 
 @router.post(
     "/isochrone",
     summary="Compute isochrones for active mobility",
-    response_class=JSONResponse,
-    status_code=201,
 )
 async def compute_active_mobility_isochrone(
     *,
-    db_connection: AsyncSession = Depends(get_db_connection),
-    routing_network: dict = Depends(get_routing_network),
     params: IIsochroneActiveMobility = Body(
         ...,
         examples=active_mobility_request_examples["isochrone_active_mobility"],
@@ -56,6 +32,46 @@ async def compute_active_mobility_isochrone(
 ):
     """Compute isochrones for active mobility."""
 
-    await CRUDIsochrone(db_connection).run(routing_network, params)
+    # Get processing status of isochrone request
+    processing_status = redis.get(str(params.layer_id))
+    processing_status = processing_status.decode("utf-8") if processing_status else None
 
-    return {"result": "success", "message": "Isochrone computed successfully."}
+    if processing_status is None:
+        # Initiate isochrone computation for request
+        redis.set(str(params.layer_id), ProcessingStatus.in_progress.value)
+        params = json.loads(params.json()).copy()
+        run_isochrone.delay(params)
+        return JSONResponse(
+            content={
+                "result": ProcessingStatus.in_progress.value,
+                "message": "Isochrone computation in progress.",
+            },
+            status_code=202,
+        )
+    elif processing_status == ProcessingStatus.in_progress.value:
+        # Isochrone computation is in progress
+        return JSONResponse(
+            content={
+                "result": processing_status,
+                "message": "Isochrone computation in progress.",
+            },
+            status_code=202,
+        )
+    elif processing_status == ProcessingStatus.success.value:
+        # Isochrone computation was successful
+        return JSONResponse(
+            content={
+                "result": processing_status,
+                "message": "Isochrone computed successfully.",
+            },
+            status_code=201,
+        )
+    else:
+        # Isochrone computation failed
+        return JSONResponse(
+            content={
+                "result": processing_status,
+                "message": "Failed to compute isochrone.",
+            },
+            status_code=500,
+        )
