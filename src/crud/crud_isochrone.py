@@ -4,7 +4,6 @@ from typing import Any
 
 import polars as pl
 from redis import Redis
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import settings
@@ -440,9 +439,8 @@ class CRUDIsochrone:
             )
         except Exception as e:
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
-            if type(e) == SQLAlchemyError:
-                await self.db_connection.rollback()
-            elif type(e) == DisconnectedOriginError:
+            await self.db_connection.rollback()
+            if type(e) == DisconnectedOriginError:
                 self.redis.set(
                     str(obj_in.layer_id), ProcessingStatus.disconnected_origin.value
                 )
@@ -500,8 +498,7 @@ class CRUDIsochrone:
             )
         except Exception as e:
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
-            if type(e) == SQLAlchemyError:
-                await self.db_connection.rollback()
+            await self.db_connection.rollback()
             print(e)
             return
         print(f"Result save time: {round(time.time() - start_time, 2)} sec")
