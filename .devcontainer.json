@@ -36,6 +36,9 @@
         }
     },
     "runServices": [
-        "api"
+        "api",
+        "rabbitmq",
+        "redis",
+        "celery-worker"
     ]
 }

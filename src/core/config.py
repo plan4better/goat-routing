@@ -18,6 +18,11 @@ class Settings(BaseSettings):
 
     NETWORK_REGION_TABLE = "temporal.network_region"
 
+    CELERY_BROKER_URL: Optional[str] = "pyamqp://guest@rabbitmq//"
+    REDIS_HOST: Optional[str] = "redis"
+    REDIS_PORT: Optional[str] = 6379
+    REDIS_DB: Optional[str] = 0
+
     POSTGRES_SERVER: str
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str

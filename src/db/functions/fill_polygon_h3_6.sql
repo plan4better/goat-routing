@@ -22,7 +22,7 @@ BEGIN
         SELECT h3_polygon_to_cells(p.geom, ARRAY[]::polygon[], 6) h3_index
         FROM polygons p
     )
-    SELECT sub.h3_index, temporal.to_short_h3_6(sub.h3_index::bigint) AS h3_short,
+    SELECT sub.h3_index, to_short_h3_6(sub.h3_index::bigint) AS h3_short,
         ST_ExteriorRing(ST_SetSRID(geometry(h3_cell_to_boundary(sub.h3_index)), 4326)) as h3_boundary,
         ST_SetSRID(geometry(h3_cell_to_boundary(sub.h3_index)), 4326) as h3_geom
     FROM h3_ids sub
