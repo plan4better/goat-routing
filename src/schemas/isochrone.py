@@ -2,7 +2,57 @@ from enum import Enum
 from typing import List
 from uuid import UUID
 
+import polars as pl
 from pydantic import BaseModel, Field, validator
+
+SEGMENT_DATA_SCHEMA = {
+    "id": pl.Int64,
+    "length_m": pl.Float64,
+    "length_3857": pl.Float64,
+    "class_": pl.Utf8,
+    "impedance_slope": pl.Float64,
+    "impedance_slope_reverse": pl.Float64,
+    "impedance_surface": pl.Float32,
+    "coordinates_3857": pl.Utf8,
+    "source": pl.Int64,
+    "target": pl.Int64,
+    "tags": pl.Utf8,
+    "h3_3": pl.Int32,
+    "h3_6": pl.Int32,
+}
+
+VALID_WALKING_CLASSES = [
+    "secondary",
+    "tertiary",
+    "residential",
+    "livingStreet",
+    "trunk",
+    "unclassified",
+    "parkingAisle",
+    "driveway",
+    "pedestrian",
+    "footway",
+    "steps",
+    "track",
+    "bridleway",
+    "unknown",
+]
+
+VALID_BICYCLE_CLASSES = [
+    "secondary",
+    "tertiary",
+    "residential",
+    "livingStreet",
+    "trunk",
+    "unclassified",
+    "parkingAisle",
+    "driveway",
+    "pedestrian",
+    "track",
+    "cycleway",
+    "bridleway",
+    "unknown",
+]
 
 
 class IsochroneType(str, Enum):
