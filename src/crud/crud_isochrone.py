@@ -10,57 +10,14 @@ from src.core.config import settings
 from src.core.isochrone import compute_isochrone
 from src.core.jsoline import generate_jsolines
 from src.schemas.error import DisconnectedOriginError
-from src.schemas.isochrone import IIsochroneActiveMobility, TravelTimeCostActiveMobility
+from src.schemas.isochrone import (
+    SEGMENT_DATA_SCHEMA,
+    VALID_BICYCLE_CLASSES,
+    VALID_WALKING_CLASSES,
+    IIsochroneActiveMobility,
+    TravelTimeCostActiveMobility,
+)
 from src.schemas.status import ProcessingStatus
-
-segment_schema = {
-    "id": pl.Int64,
-    "length_m": pl.Float64,
-    "length_3857": pl.Float64,
-    "class_": pl.Utf8,
-    "impedance_slope": pl.Float64,
-    "impedance_slope_reverse": pl.Float64,
-    "impedance_surface": pl.Float32,
-    "coordinates_3857": pl.Utf8,
-    "source": pl.Int64,
-    "target": pl.Int64,
-    "tags": pl.Utf8,
-    "h3_3": pl.Int32,
-    "h3_6": pl.Int32,
-}
-
-valid_walking_classes = [
-    "secondary",
-    "tertiary",
-    "residential",
-    "livingStreet",
-    "trunk",
-    "unclassified",
-    "parkingAisle",
-    "driveway",
-    "pedestrian",
-    "footway",
-    "steps",
-    "track",
-    "bridleway",
-    "unknown",
-]
-
-valid_bicycle_classes = [
-    "secondary",
-    "tertiary",
-    "residential",
-    "livingStreet",
-    "trunk",
-    "unclassified",
-    "parkingAisle",
-    "driveway",
-    "pedestrian",
-    "track",
-    "cycleway",
-    "bridleway",
-    "unknown",
-]
 
 
 class FetchRoutingNetwork:
@@ -107,7 +64,7 @@ class FetchRoutingNetwork:
                         WHERE h3_3 = {h3_index}
                     """,
                     uri=settings.POSTGRES_DATABASE_URI,
-                    schema_overrides=segment_schema,
+                    schema_overrides=SEGMENT_DATA_SCHEMA,
                 )
                 segments_df[h3_index] = segments_df[h3_index].with_columns(
                     pl.col("coordinates_3857").str.json_extract()
@@ -138,9 +95,9 @@ class CRUDIsochrone:
 
         # Get valid segment classes based on transport mode
         valid_segment_classes = (
-            valid_walking_classes
+            VALID_WALKING_CLASSES
             if obj_in.routing_type == "walking"
-            else valid_bicycle_classes
+            else VALID_BICYCLE_CLASSES
         )
 
         # Compute buffer distance for identifying relevant H3_6 cells
@@ -233,7 +190,7 @@ class CRUDIsochrone:
                         "h3_6": a_seg[14],
                     }
                 ],
-                schema_overrides=segment_schema,
+                schema_overrides=SEGMENT_DATA_SCHEMA,
             )
             new_df = new_df.with_columns(pl.col("coordinates_3857").str.json_extract())
             sub_network.extend(new_df)
@@ -309,6 +266,8 @@ class CRUDIsochrone:
                     VALUES (ST_SetSRID(ST_MakePoint({longitude}, {latitude}), 4326));
                 """
             )
+
+        await self.db_connection.commit()
 
         return table_name, len(obj_in.starting_points.latitude)
 
@@ -387,6 +346,7 @@ class CRUDIsochrone:
                 VALUES {insert_string.rstrip(",")};
             """
             await self.db_connection.execute(insert_string)
+            await self.db_connection.commit()
         elif obj_in.isochrone_type == "network":
             # Save isochrone network data
             batch_size = 1000
@@ -408,6 +368,7 @@ class CRUDIsochrone:
                         VALUES {insert_string.rstrip(",")};
                     """
                     await self.db_connection.execute(insert_string)
+                    await self.db_connection.commit()
                     insert_string = ""
         else:
             # Save isochrone grid data
