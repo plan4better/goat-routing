@@ -175,7 +175,7 @@ class IIsochroneActiveMobility(BaseModel):
         title="Result Table",
         description="The table name the results should be saved.",
     )
-    layer_id: UUID = Field(
+    layer_id: UUID | None = Field(
         ...,
         title="Layer ID",
         description="The ID of the layer the results should be saved.",

@@ -41,7 +41,8 @@ class FetchRoutingNetwork:
             """
             result = (await self.db_connection.execute(sql_get_h3_3_grid)).fetchall()
             for h3_index in result:
-                h3_3_grid.append(h3_index[0])
+                if h3_index[0] in [8108]:
+                    h3_3_grid.append(h3_index[0])
         except Exception as e:
             print(e)
             # TODO Throw appropriate exception
@@ -86,12 +87,13 @@ class CRUDIsochrone:
         self.routing_network = None
 
     async def read_network(
-        self, routing_network: dict, obj_in: IIsochroneActiveMobility
+        self,
+        routing_network: dict,
+        obj_in: IIsochroneActiveMobility,
+        input_table: str,
+        num_points: int,
     ) -> Any:
         """Read relevant sub-network for isochrone calculation from polars dataframe."""
-
-        # Create input table for isochrone origin points
-        input_table, num_points = await self.create_input_table(obj_in)
 
         # Get valid segment classes based on transport mode
         valid_segment_classes = (
@@ -150,6 +152,7 @@ class CRUDIsochrone:
 
         # Create necessary artifical segments and add them to our sub network
         origin_point_connectors = []
+        origin_point_coords = []
         segments_to_discard = []
         sql_get_artificial_segments = f"""
             SELECT
@@ -158,18 +161,21 @@ class CRUDIsochrone:
                 id, length_m, length_3857, class_, impedance_slope,
                 impedance_slope_reverse, impedance_surface,
                 CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                source, target, tags, h3_3, h3_6
+                source, target, tags, h3_3, h3_6,
+                point_x, point_y
             FROM temporal.get_artificial_segments(
                 '{input_table}',
                 {num_points},
                 '{",".join(valid_segment_classes)}'
             );
         """
-        for a_seg in (
+        result = (
             await self.db_connection.execute(sql_get_artificial_segments)
-        ).fetchall():
+        ).fetchall()
+        for a_seg in result:
             if a_seg[0] is not None:
                 origin_point_connectors.append(a_seg[10])
+                origin_point_coords.append((a_seg[15], a_seg[16]))
                 segments_to_discard.append(a_seg[1])
 
             new_df = pl.DataFrame(
@@ -238,7 +244,7 @@ class CRUDIsochrone:
             "geom": sub_network.get_column("coordinates_3857").to_numpy().copy(),
         }
 
-        return sub_network, origin_point_connectors
+        return sub_network, origin_point_connectors, origin_point_coords
 
     async def create_input_table(self, obj_in: IIsochroneActiveMobility):
         """Create the input table for the isochrone calculation."""
@@ -246,7 +252,7 @@ class CRUDIsochrone:
         # Generate random table name
         table_name = str(uuid.uuid4()).replace("-", "_")
 
-        # Create temporary table for storing the isochrone input
+        # Create temporary table for storing isochrone starting points
         await self.db_connection.execute(
             f"""
                 CREATE TABLE temporal.\"{table_name}\" (
@@ -256,16 +262,20 @@ class CRUDIsochrone:
             """
         )
 
-        # Insert the isochrone input into the temporary table
+        # Insert isochrone starting points into the temporary table
+        insert_string = ""
         for i in range(len(obj_in.starting_points.latitude)):
             latitude = obj_in.starting_points.latitude[i]
             longitude = obj_in.starting_points.longitude[i]
-            await self.db_connection.execute(
-                f"""
-                    INSERT INTO temporal.\"{table_name}\" (geom)
-                    VALUES (ST_SetSRID(ST_MakePoint({longitude}, {latitude}), 4326));
-                """
+            insert_string += (
+                f"(ST_SetSRID(ST_MakePoint({longitude}, {latitude}), 4326)),"
             )
+        await self.db_connection.execute(
+            f"""
+                INSERT INTO temporal.\"{table_name}\" (geom)
+                VALUES {insert_string.rstrip(",")};
+            """
+        )
 
         await self.db_connection.commit()
 
@@ -394,9 +404,14 @@ class CRUDIsochrone:
         sub_routing_network = None
         origin_connector_ids = None
         try:
-            sub_routing_network, origin_connector_ids = await self.read_network(
+            # Create input table for isochrone origin points
+            input_table, num_points = await self.create_input_table(obj_in)
+
+            sub_routing_network, origin_connector_ids, _ = await self.read_network(
                 routing_network,
                 obj_in,
+                input_table,
+                num_points,
             )
         except Exception as e:
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)

@@ -6,6 +6,10 @@ from redis import Redis
 
 from src.core.config import settings
 from src.core.worker import run_isochrone
+from src.crud.crud_heatmap import CRUDHeatmap
+from src.crud.crud_isochrone import CRUDIsochrone
+from src.db.session import async_session
+from src.schemas.heatmap import IHeatmapActiveMobility
 from src.schemas.isochrone import IIsochroneActiveMobility
 from src.schemas.isochrone import request_examples as active_mobility_request_examples
 from src.schemas.status import ProcessingStatus
@@ -16,6 +20,10 @@ redis = Redis(
     port=settings.REDIS_PORT,
     db=settings.REDIS_DB,
 )
+
+db_connection = async_session()
+crud_heatmap = CRUDHeatmap(db_connection)
+crud_isochrone = CRUDIsochrone(db_connection, redis)
 
 
 @router.post(
@@ -84,3 +92,25 @@ async def compute_active_mobility_isochrone(
             },
             status_code=500,
         )
+
+
+@router.post(
+    "/heatmap",
+    summary="Compute heatmaps for active mobility",
+)
+async def compute_active_mobility_heatmap(
+    *,
+    params: IHeatmapActiveMobility = Body(
+        ...,
+        examples=active_mobility_request_examples["isochrone_active_mobility"],
+        description="The isochrone parameters.",
+    ),
+):
+    """Compute heatmap for active mobility."""
+
+    response_content = await crud_heatmap.run(crud_isochrone, params)
+
+    return JSONResponse(
+        content=response_content,
+        status_code=200,
+    )
