@@ -5,9 +5,9 @@ import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.isochrone import (
-    compute_isochrone_h3_optimized,
     construct_adjacency_list_,
     dijkstra_h3,
+    network_to_grid_h3,
     prepare_network_isochrone,
 )
 from src.crud.crud_isochrone import CRUDIsochrone, FetchRoutingNetwork
@@ -60,27 +60,23 @@ class CRUDHeatmap:
     async def get_h3_10_grid(
         self,
         travel_cost: TravelTimeCostActiveMobility,
-        point_coords: tuple,
+        h3_6_index: str,
     ):
         buffer_dist = travel_cost.max_traveltime * ((travel_cost.speed * 1000) / 60)
 
         sql_get_relevant_cells = f"""
-            WITH point AS (
-                SELECT ST_SetSRID(ST_MakePoint({point_coords[0]}, {point_coords[1]}), 4326) AS geom
-            ),
-            buffer AS (
-                SELECT ST_Buffer(point.geom::geography, {buffer_dist})::geometry AS geom
-                FROM point
-            ),
-            cells AS (
-                SELECT h3_index, h3_short
-                FROM buffer,
-                LATERAL temporal.fill_polygon_h3_10(buffer.geom)
+            WITH cells AS (
+                SELECT h3_grid_disk(origin_h3_index, radius.value) AS h3_index
+                FROM h3_cell_to_center_child('{h3_6_index}', 10) AS origin_h3_index,
+                LATERAL (SELECT (h3_get_hexagon_edge_length_avg(6, 'm') + {buffer_dist})::int AS dist) AS buffer,
+                LATERAL (SELECT (buffer.dist / (h3_get_hexagon_edge_length_avg(10, 'm') * 2)::int) AS value) AS radius
             )
-            SELECT cells.*, ST_X(coords), ST_Y(coords)
+            SELECT h3_index, to_short_h3_10(h3_index::bigint), ST_X(centroid), ST_Y(centroid)
             FROM cells,
-            LATERAL h3_cell_to_lat_lng(h3_index) geom,
-            LATERAL ST_Transform(ST_SetSRID(geom::geometry, 4326), 3857) coords;
+            LATERAL (
+                SELECT ST_Transform(ST_SetSRID(point::geometry, 4326), 3857) AS centroid
+                FROM h3_cell_to_lat_lng(h3_index) AS point
+            ) sub;
         """
         result = (await self.db_connection.execute(sql_get_relevant_cells)).fetchall()
 
@@ -116,6 +112,7 @@ class CRUDHeatmap:
             insert_string += (
                 f"({h3_cost[i]}, h3_cell_to_boundary('{h3_index[i]}')::geometry),"
             )
+
         await self.db_connection.execute(
             f"""
                 INSERT INTO basic.heatmap_h3 (cost, geom)
@@ -125,10 +122,25 @@ class CRUDHeatmap:
 
         await db_connection.commit()
 
-    async def write_to_db(self, db_connection, origin_h3_coords, h3_short, h3_cost):
+    def add_to_insert_string(self, orig_h3_10, orig_h3_3, dest_h3_10, cost):
+        cost_map = {}
+        for i in range(len(dest_h3_10)):
+            if math.isnan(cost[i]):
+                continue
+            if int(cost[i]) not in cost_map:
+                cost_map[int(cost[i])] = []
+            cost_map[int(cost[i])].append(int(dest_h3_10[i]))
+
+        for cost in cost_map:
+            self.insert_string += (
+                f"({orig_h3_10}, ARRAY{cost_map[cost]}, {cost}, {orig_h3_3}),"
+            )
+            self.num_rows_queued += 1
+
+    async def write_to_db(self, db_connection):
         # await db_connection.execute("DROP TABLE IF EXISTS basic.heatmap_grid_walking;")
         # sql_create_table = """
-        #     CREATE TABLE IF NOT EXISTS basic.heatmap_grid_walking (
+        #     CREATE UNLOGGED TABLE IF NOT EXISTS basic.heatmap_grid_walking (
         #         h3_orig bigint,
         #         h3_dest bigint[],
         #         cost int,
@@ -136,35 +148,18 @@ class CRUDHeatmap:
         #     );
         # """
         # await db_connection.execute(sql_create_table)
+        # await db_connection.execute("SELECT create_distributed_table('basic.heatmap_grid_walking', 'h3_3');")
+        # await db_connection.commit()
 
-        cost_map = {}
-        for i in range(len(h3_short)):
-            if math.isnan(h3_cost[i]):
-                continue
-            if int(h3_cost[i]) not in cost_map:
-                cost_map[int(h3_cost[i])] = []
-            cost_map[int(h3_cost[i])].append(int(h3_short[i]))
-
-        sql_get_h3_short = f"""
-            WITH point AS (
-                SELECT (ST_SetSRID(ST_MakePoint({origin_h3_coords[0]}, {origin_h3_coords[1]}), 4326))::point AS geom
-            )
-            SELECT to_short_h3_10(h3_lat_lng_to_cell(point.geom, 10)::bigint), to_short_h3_3(h3_lat_lng_to_cell(point.geom, 3)::bigint)
-            FROM point;
-        """
-        h3_orig, h3_3 = (await db_connection.execute(sql_get_h3_short)).fetchall()[0]
-
-        insert_string = ""
-        for cost in cost_map:
-            insert_string += f"({h3_orig}, ARRAY{cost_map[cost]}, {cost}, {h3_3}),"
         await db_connection.execute(
             f"""
                 INSERT INTO basic.heatmap_grid_walking (h3_orig, h3_dest, cost, h3_3)
-                VALUES {insert_string.rstrip(",")};
+                VALUES {self.insert_string.rstrip(",")};
             """
         )
-
         await db_connection.commit()
+
+        # print(f"Insert time: {round(time.time() - insert_time, 3)} sec")
 
     async def run(
         self,
@@ -187,7 +182,8 @@ class CRUDHeatmap:
         start_time = time.time()
         sub_routing_network = None
         origin_connector_ids = None
-        origin_point_coords = None
+        origin_point_h3_10 = None
+        origin_point_h3_3 = None
         input_table = None
         num_points = None
         try:
@@ -199,7 +195,8 @@ class CRUDHeatmap:
             (
                 sub_routing_network,
                 origin_connector_ids,
-                origin_point_coords,
+                origin_point_h3_10,
+                origin_point_h3_3,
             ) = await crud_isochrone.read_network(
                 routing_network,
                 isochrone_request,
@@ -246,41 +243,49 @@ class CRUDHeatmap:
                 False,
             )
 
-            for i in range(len(origin_point_coords)):
-                (
-                    h3_index,
-                    h3_short,
-                    h3_centroid_x,
-                    h3_centroid_y,
-                ) = await self.get_h3_10_grid(
-                    isochrone_request.travel_cost,
-                    origin_point_coords[i],
-                )
+            (
+                h3_index,
+                h3_short,
+                h3_centroid_x,
+                h3_centroid_y,
+            ) = await self.get_h3_10_grid(
+                isochrone_request.travel_cost,
+                obj_in.h3_6_cell,
+            )
 
-                h3_cost = compute_isochrone_h3_optimized(
+            self.insert_string = ""
+            self.num_rows_queued = 0
+            for i in range(len(origin_point_h3_10)):
+                mapped_cost = network_to_grid_h3(
+                    extent=extent,
+                    zoom=10,
                     edges_source=edges_source,
                     edges_target=edges_target,
                     edges_length=edges_length,
-                    node_coords=node_coords,
                     geom_address=geom_address,
                     geom_array=geom_array,
                     distances=distances_list[i],
-                    travel_time=isochrone_request.travel_cost.max_traveltime,
+                    node_coords=node_coords,
                     speed=isochrone_request.travel_cost.speed / 3.6,
+                    max_traveltime=isochrone_request.travel_cost.max_traveltime,
                     centroid_x=h3_centroid_x,
                     centroid_y=h3_centroid_y,
-                    extent=extent,
                 )
 
-                await self.write_to_db(
-                    self.db_connection,
-                    origin_h3_coords=origin_point_coords[i],
-                    h3_short=h3_short,
-                    h3_cost=h3_cost,
+                self.add_to_insert_string(
+                    orig_h3_10=origin_point_h3_10[i],
+                    orig_h3_3=origin_point_h3_3[i],
+                    dest_h3_10=h3_short,
+                    cost=mapped_cost,
                 )
+
+                if self.num_rows_queued >= 800 or i == len(origin_point_h3_10) - 1:
+                    await self.write_to_db(self.db_connection)
+                    self.insert_string = ""
+                    self.num_rows_queued = 0
 
                 """await self.write_h3_index_cost_to_db(
-                    self.db_connection, h3_index, h3_cost
+                    self.db_connection, h3_index, mapped_cost
                 )"""
         except Exception as e:
             await self.db_connection.rollback()

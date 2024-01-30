@@ -440,7 +440,7 @@ def build_grid_interpolate_h3(
     # Use K-nearest-neighbors function to find the nearest node to each centroid
     tree = spatial.KDTree(points)
     distances, indices = tree.query(
-        grid_points, k=1, distance_upper_bound=200, workers=-1
+        grid_points, k=1, distance_upper_bound=200, workers=1
     )
 
     # Map cost of nearest node to each centroid
@@ -723,47 +723,3 @@ def compute_isochrone(
         network = None
 
     return grid_data, network
-
-
-def compute_isochrone_h3_optimized(
-    edges_source,
-    edges_target,
-    edges_length,
-    node_coords,
-    geom_address,
-    geom_array,
-    distances,
-    travel_time,
-    speed,
-    centroid_x,
-    centroid_y,
-    extent,
-    zoom: int = 10,
-):
-    """
-    Compute isochrone for a given start vertices
-
-    :param edge_network: Edge Network DataFrame
-    :param start_vertices: List of start vertices
-    :param travel_time: Travel time in minutes
-    :return: R5 Grid
-    """
-
-    # Compute cost mapping for H3 cells
-    mapped_cost = network_to_grid_h3(
-        extent,
-        zoom,
-        edges_source,
-        edges_target,
-        edges_length,
-        geom_address,
-        geom_array,
-        distances,
-        node_coords,
-        speed,
-        travel_time,
-        centroid_x,
-        centroid_y,
-    )
-
-    return mapped_cost

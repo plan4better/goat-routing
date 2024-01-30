@@ -152,7 +152,8 @@ class CRUDIsochrone:
 
         # Create necessary artifical segments and add them to our sub network
         origin_point_connectors = []
-        origin_point_coords = []
+        origin_point_h3_10 = []
+        origin_point_h3_3 = []
         segments_to_discard = []
         sql_get_artificial_segments = f"""
             SELECT
@@ -161,8 +162,7 @@ class CRUDIsochrone:
                 id, length_m, length_3857, class_, impedance_slope,
                 impedance_slope_reverse, impedance_surface,
                 CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                source, target, tags, h3_3, h3_6,
-                point_x, point_y
+                source, target, tags, h3_3, h3_6, point_h3_10, point_h3_3
             FROM temporal.get_artificial_segments(
                 '{input_table}',
                 {num_points},
@@ -175,7 +175,8 @@ class CRUDIsochrone:
         for a_seg in result:
             if a_seg[0] is not None:
                 origin_point_connectors.append(a_seg[10])
-                origin_point_coords.append((a_seg[15], a_seg[16]))
+                origin_point_h3_10.append(a_seg[15])
+                origin_point_h3_3.append(a_seg[16])
                 segments_to_discard.append(a_seg[1])
 
             new_df = pl.DataFrame(
@@ -244,7 +245,12 @@ class CRUDIsochrone:
             "geom": sub_network.get_column("coordinates_3857").to_numpy().copy(),
         }
 
-        return sub_network, origin_point_connectors, origin_point_coords
+        return (
+            sub_network,
+            origin_point_connectors,
+            origin_point_h3_10,
+            origin_point_h3_3,
+        )
 
     async def create_input_table(self, obj_in: IIsochroneActiveMobility):
         """Create the input table for the isochrone calculation."""
@@ -407,7 +413,7 @@ class CRUDIsochrone:
             # Create input table for isochrone origin points
             input_table, num_points = await self.create_input_table(obj_in)
 
-            sub_routing_network, origin_connector_ids, _ = await self.read_network(
+            sub_routing_network, origin_connector_ids, _, _ = await self.read_network(
                 routing_network,
                 obj_in,
                 input_table,
