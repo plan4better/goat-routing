@@ -15,6 +15,7 @@ class SyncPostgresDsn(PostgresDsn):
 class Settings(BaseSettings):
     API_V2_STR: str = "/api/v2"
     PROJECT_NAME: Optional[str] = "GOAT Routing API"
+    CACHE_DIR: str = "/app/src/cache"
 
     NETWORK_REGION_TABLE = "temporal.network_region"
 
