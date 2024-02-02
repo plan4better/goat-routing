@@ -1,4 +1,4 @@
-from multiprocessing import Pool
+from concurrent.futures import ProcessPoolExecutor
 
 import psycopg2
 
@@ -11,7 +11,7 @@ class HeatmapMatrixPreparation:
     def __init__(self):
         # User configurable
         self.ROUTING_TYPE = RoutingActiveMobilityType.walking
-        self.NUM_THREADS = 1
+        self.NUM_THREADS = 16
 
     def get_cells_to_process(self, db_cursor):
         """Get list of parent H3_6 cells to process."""
@@ -19,7 +19,7 @@ class HeatmapMatrixPreparation:
         # Get cells from pre-defined table
         sql_get_cells_to_process = """
             SELECT h3_index
-            FROM basic.heatmap_parent_cells;
+            FROM basic.geofence_heatmap_grid;
         """
         db_cursor.execute(sql_get_cells_to_process)
         result = db_cursor.fetchall()
@@ -42,15 +42,15 @@ class HeatmapMatrixPreparation:
         start = 0
         for i in range(self.NUM_THREADS):
             end = start + chunk_size + (i < remainder)
-            chunks.append(cells_to_process[start:end])
+            chunks.append([i, cells_to_process[start:end]])
             start = end
 
         return chunks
 
     def process_chunk(self, chunk):
         HeatmapMatrixProcess(
-            thread_id=0,
-            chunk=chunk,
+            thread_id=chunk[0],
+            chunk=chunk[1],
             routing_type=self.ROUTING_TYPE,
         ).run()
 
@@ -67,9 +67,12 @@ class HeatmapMatrixPreparation:
 
         db_connection.close()
 
-        # Spawn NUM_THREADS processes to compute matrix in parallel
-        with Pool(self.NUM_THREADS) as process_pool:
-            process_pool.map(self.process_chunk, chunks)
+        try:
+            # Spawn NUM_THREADS processes to compute matrix in parallel
+            with ProcessPoolExecutor(max_workers=self.NUM_THREADS) as process_pool:
+                process_pool.map(self.process_chunk, chunks)
+        except Exception as e:
+            print(e)
 
 
 if __name__ == "__main__":

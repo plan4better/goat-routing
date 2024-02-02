@@ -1,3 +1,4 @@
+import json
 import math
 
 import numpy as np
@@ -12,6 +13,7 @@ from src.core.isochrone import (
     prepare_network_isochrone,
 )
 from src.crud.crud_isochrone_sync import CRUDIsochrone, FetchRoutingNetwork
+from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.schemas.heatmap import ROUTING_COST_CONFIG
 from src.schemas.isochrone import (
     IIsochroneActiveMobility,
@@ -32,7 +34,7 @@ class HeatmapMatrixProcess:
         self.routing_network = None
         self.chunk = chunk
         self.routing_type = routing_type
-        self.INSERT_BATCH_SIZE = 800
+        self.INSERT_BATCH_SIZE = 25
 
         self.buffer_distance = ROUTING_COST_CONFIG[
             routing_type.value
@@ -86,7 +88,7 @@ class HeatmapMatrixProcess:
                 LATERAL (SELECT (h3_get_hexagon_edge_length_avg(6, 'm') + {self.buffer_distance})::int AS dist) AS buffer,
                 LATERAL (SELECT (buffer.dist / (h3_get_hexagon_edge_length_avg(10, 'm') * 2)::int) AS value) AS radius
             )
-            SELECT h3_index, to_short_h3_10(h3_index::bigint), ST_X(centroid), ST_Y(centroid)
+            SELECT h3_index, ST_X(centroid), ST_Y(centroid)
             FROM cells,
             LATERAL (
                 SELECT ST_Transform(ST_SetSRID(point::geometry, 4326), 3857) AS centroid
@@ -97,36 +99,34 @@ class HeatmapMatrixProcess:
         result = db_cursor.fetchall()
 
         h3_index = []
-        h3_short = np.empty(len(result))
         x_centroids = np.empty(len(result))
         y_centroids = np.empty(len(result))
         for i in range(len(result)):
             h3_index.append(result[i][0])
-            h3_short[i] = result[i][1]
-            x_centroids[i] = result[i][2]
-            y_centroids[i] = result[i][3]
+            x_centroids[i] = result[i][1]
+            y_centroids[i] = result[i][2]
 
-        return h3_index, h3_short, x_centroids, y_centroids
+        return h3_index, x_centroids, y_centroids
 
-    def add_to_insert_string(self, orig_h3_10, orig_h3_3, dest_h3_10, cost):
+    def add_to_insert_string(self, orig_h3_10, dest_h3_10, cost, orig_h3_3):
         cost_map = {}
         for i in range(len(dest_h3_10)):
             if math.isnan(cost[i]):
                 continue
             if int(cost[i]) not in cost_map:
                 cost_map[int(cost[i])] = []
-            cost_map[int(cost[i])].append(int(dest_h3_10[i]))
+            cost_map[int(cost[i])].append(dest_h3_10[i])
+        cost_map = json.dumps(cost_map)
 
-        for cost in cost_map:
-            self.insert_string += (
-                f"({orig_h3_10}, ARRAY{cost_map[cost]}, {cost}, {orig_h3_3}),"
-            )
-            self.num_rows_queued += 1
+        self.insert_string += (
+            f"('{orig_h3_10}'::h3index, '{cost_map}'::jsonb, {orig_h3_3}),"
+        )
+        self.num_rows_queued += 1
 
     def write_to_db(self, db_cursor, db_connection):
         db_cursor.execute(
             f"""
-                INSERT INTO basic.heatmap_grid_walking (h3_orig, h3_dest, cost, h3_3)
+                INSERT INTO basic.heatmap_grid_walking (h3_orig, travel_time, h3_3)
                 VALUES {self.insert_string.rstrip(",")};
             """
         )
@@ -147,16 +147,12 @@ class HeatmapMatrixProcess:
         ):
             h3_6_index = self.chunk[index]
 
-            if h3_6_index != "861faca0fffffff":
-                continue
-
             isochrone_request = self.generate_multi_isochrone_request(
                 db_cursor=db_cursor,
                 h3_6_index=h3_6_index,
                 routing_type=self.routing_type,
             )
 
-            # Read & process routing network to extract relevant sub-network
             sub_routing_network = None
             origin_connector_ids = None
             origin_point_h3_10 = None
@@ -167,6 +163,7 @@ class HeatmapMatrixProcess:
                     isochrone_request
                 )
 
+                # Read & process routing network to extract relevant sub-network
                 (
                     sub_routing_network,
                     origin_connector_ids,
@@ -183,8 +180,22 @@ class HeatmapMatrixProcess:
                 crud_isochrone.delete_input_table(input_table)
             except Exception as e:
                 db_connection.rollback()
-                print(e)
-                break
+                if isinstance(e, DisconnectedOriginError):
+                    print(
+                        f"Thread {self.thread_id}: Skipping {h3_6_index} due to disconnected origin. Starting points: [temporal.{input_table}]"
+                    )
+                    continue
+                elif isinstance(e, BufferExceedsNetworkError):
+                    print(
+                        f"Thread {self.thread_id}: Skipping {h3_6_index} due to buffer exceeding network. Starting points: [temporal.{input_table}]"
+                    )
+                    continue
+                else:
+                    print(e)
+                    print(
+                        f"Thread {self.thread_id}: Error processing {h3_6_index}, exiting."
+                    )
+                    break
 
             # Compute heatmap grid utilizing processed sub-network
             try:
@@ -221,7 +232,6 @@ class HeatmapMatrixProcess:
 
                 (
                     h3_index,
-                    h3_short,
                     h3_centroid_x,
                     h3_centroid_y,
                 ) = self.get_h3_10_grid(
@@ -250,9 +260,9 @@ class HeatmapMatrixProcess:
 
                     self.add_to_insert_string(
                         orig_h3_10=origin_point_h3_10[i],
-                        orig_h3_3=origin_point_h3_3[i],
-                        dest_h3_10=h3_short,
+                        dest_h3_10=h3_index,
                         cost=mapped_cost,
+                        orig_h3_3=origin_point_h3_3[i],
                     )
 
                     if (
@@ -269,6 +279,11 @@ class HeatmapMatrixProcess:
             except Exception as e:
                 db_connection.rollback()
                 print(e)
+                print(
+                    f"Thread {self.thread_id}: Error processing {h3_6_index}, exiting."
+                )
                 break
 
         db_connection.close()
+
+        print(f"Thread {self.thread_id} finished.")

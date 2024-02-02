@@ -9,7 +9,7 @@ CREATE TYPE temporal.origin_segment AS (
 
 DROP TYPE IF EXISTS temporal.artificial_segment CASCADE;
 CREATE TYPE temporal.artificial_segment AS (
-    point_id int2, point_geom geometry, point_h3_10 bigint, point_h3_3 int, old_id int,
+    point_id int2, point_geom geometry, point_h3_10 h3index, point_h3_3 int, old_id int,
     id int, length_m float, length_3857 float, class_ text, impedance_slope float8,
     impedance_slope_reverse float8, impedance_surface float8, coordinates_3857 jsonb,
     source int, target int, geom geometry, tags text, h3_3 int2, h3_6 int4
@@ -126,7 +126,7 @@ BEGIN
                 -- Generate an artificial segment connecting the origin point to the new artificial segment
                 artificial_segment.point_id = origin_segment.point_id[i - 1];
                 artificial_segment.point_geom = origin_segment.point_geom[i - 1];
-                artificial_segment.point_h3_10 = to_short_h3_10(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 10)::bigint);
+                artificial_segment.point_h3_10 = h3_lat_lng_to_cell(artificial_segment.point_geom::point, 10);
                 artificial_segment.point_h3_3 = to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
                 artificial_segment.id = artificial_seg_index;
                 new_geom = ST_SetSRID(ST_MakeLine(
@@ -180,7 +180,7 @@ BEGIN
         -- Generate an artificial segment connecting the origin point to the new artificial segment
         artificial_segment.point_id = origin_segment.point_id[array_length(origin_segment.point_id, 1)];
         artificial_segment.point_geom = origin_segment.point_geom[array_length(origin_segment.point_geom, 1)];
-        artificial_segment.point_h3_10 = to_short_h3_10(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 10)::bigint);
+        artificial_segment.point_h3_10 = h3_lat_lng_to_cell(artificial_segment.point_geom::point, 10);
         artificial_segment.point_h3_3 = to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
         artificial_segment.id = artificial_seg_index;
         new_geom = ST_SetSRID(ST_MakeLine(
