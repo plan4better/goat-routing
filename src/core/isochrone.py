@@ -232,7 +232,7 @@ def remap_edges(edge_source, edge_target, geom_address, geom_array):
         key_type=types.int64,
         value_type=types.int64,
     )
-    node_coords = np.empty((len(edge_source), 2), np.double)
+    node_coords = np.empty((int((len(edge_source) * 1.5)), 2), np.double)
     id = 0
     for i in range(len(edge_source)):
         edge_geom = geom_array[geom_address[i] : geom_address[i + 1], :]
@@ -594,7 +594,7 @@ def network_to_grid_h3(
     centroid_x,
     centroid_y,
 ):
-    """# Pixel coordinates origin is at the top left corner of the image. (y of top right/left corner is smaller than y of bottom right/left corner)
+    # Pixel coordinates origin is at the top left corner of the image. (y of top right/left corner is smaller than y of bottom right/left corner)
     xy_bottom_left = [
         math.floor(x)
         for x in coordinate_to_pixel(
@@ -608,7 +608,7 @@ def network_to_grid_h3(
         )
     ]
     # pixel x, y distances
-    xy_top_right[0] - xy_bottom_left[0]"""
+    width_pixel = xy_top_right[0] - xy_bottom_left[0]
 
     # split edges based on resolution
     interpolated_coords = []
@@ -626,14 +626,14 @@ def network_to_grid_h3(
     node_coords_list = np.concatenate((node_coords, interpolated_coords))
     node_costs_list = np.concatenate((distances, interpolated_costs))
 
-    """node_coords_list, node_costs_list = filter_nodes(
+    node_coords_list, node_costs_list = filter_nodes(
         node_coords_list,
         node_costs_list,
         zoom,
         width_pixel,
         xy_bottom_left[0],
         xy_top_right[1],
-    )"""
+    )
 
     mapped_cost = build_grid_interpolate_h3(
         node_coords_list,
