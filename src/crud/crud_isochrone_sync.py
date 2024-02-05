@@ -156,7 +156,7 @@ class CRUDIsochrone:
 
             if sub_df is None:
                 raise BufferExceedsNetworkError(
-                    "Isochrone buffer extends H3_3 network cells."
+                    "Isochrone buffer exceeds available H3_3 network cells."
                 )
 
             sub_df = sub_df.filter(

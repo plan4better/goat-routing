@@ -11,7 +11,7 @@ from tqdm import tqdm
 from src.core.config import settings
 from src.core.isochrone import compute_isochrone
 from src.core.jsoline import generate_jsolines
-from src.schemas.error import DisconnectedOriginError
+from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.schemas.isochrone import (
     SEGMENT_DATA_SCHEMA,
     VALID_BICYCLE_CLASSES,
@@ -158,7 +158,14 @@ class CRUDIsochrone:
         # Get relevant segments & connectors
         sub_network = pl.DataFrame()
         for h3_3 in h3_3_cells:
-            sub_df = routing_network[h3_3].filter(
+            sub_df = routing_network.get(h3_3)
+
+            if sub_df is None:
+                raise BufferExceedsNetworkError(
+                    "Isochrone buffer exceeds available H3_3 network cells."
+                )
+
+            sub_df = sub_df.filter(
                 pl.col("h3_6").is_in(h3_6_cells)
                 & pl.col("class_").is_in(valid_segment_classes)
             )
