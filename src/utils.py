@@ -1,5 +1,6 @@
 import json
 import math
+import os
 
 import numpy as np
 from numba import njit
@@ -181,3 +182,9 @@ def decode_r5_grid(grid_data_buffer: bytes) -> dict:
     metadata = json.loads(raw_metadata.tostring())
 
     return header | metadata | {"data": data, "errors": [], "warnings": []}
+
+
+def make_dir(dir_path: str):
+    """Creates a new directory if it doesn't already exist"""
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)

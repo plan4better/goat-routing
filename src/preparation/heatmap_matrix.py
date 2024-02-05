@@ -65,6 +65,7 @@ class HeatmapMatrixPreparation:
         # Split cells to process into NUM_THREADS chunks to be processed in parallel
         chunks = self.split_cells_into_chunks(cells_to_process)
 
+        # Close database connection
         db_connection.close()
 
         try:

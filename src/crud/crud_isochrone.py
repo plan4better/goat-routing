@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 from typing import Any
@@ -5,6 +6,7 @@ from typing import Any
 import polars as pl
 from redis import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
+from tqdm import tqdm
 
 from src.core.config import settings
 from src.core.isochrone import compute_isochrone
@@ -18,6 +20,7 @@ from src.schemas.isochrone import (
     TravelTimeCostActiveMobility,
 )
 from src.schemas.status import ProcessingStatus
+from src.utils import make_dir
 
 
 class FetchRoutingNetwork:
@@ -41,7 +44,7 @@ class FetchRoutingNetwork:
             """
             result = (await self.db_connection.execute(sql_get_h3_3_grid)).fetchall()
             for h3_index in result:
-                if h3_index[0] in [8108]:
+                if h3_index[0]:
                     h3_3_grid.append(h3_index[0])
         except Exception as e:
             print(e)
@@ -51,25 +54,39 @@ class FetchRoutingNetwork:
         segments_df = {}
         df_size = 0.0
         try:
-            for h3_index in h3_3_grid:
-                print(f"Loading network for H3 cell {h3_index}.")
+            # Create cache dir if it doesn't exist
+            make_dir(settings.CACHE_DIR)
 
-                segments_df[h3_index] = pl.read_database_uri(
-                    query=f"""
-                        SELECT
-                            id, length_m, length_3857,
-                            class_, impedance_slope, impedance_slope_reverse,
-                            impedance_surface, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                            source, target, CAST(tags AS TEXT) AS tags, h3_3, h3_6
-                        FROM basic.segment
-                        WHERE h3_3 = {h3_index}
-                    """,
-                    uri=settings.POSTGRES_DATABASE_URI,
-                    schema_overrides=SEGMENT_DATA_SCHEMA,
-                )
-                segments_df[h3_index] = segments_df[h3_index].with_columns(
-                    pl.col("coordinates_3857").str.json_extract()
-                )
+            for index in tqdm(
+                range(len(h3_3_grid)), desc="Loading H3_3 grid", unit=" cell"
+            ):
+                h3_index = h3_3_grid[index]
+
+                if os.path.exists(f"{settings.CACHE_DIR}/{h3_index}.parquet"):
+                    segments_df[h3_index] = pl.read_parquet(
+                        f"{settings.CACHE_DIR}/{h3_index}.parquet"
+                    )
+                else:
+                    segments_df[h3_index] = pl.read_database_uri(
+                        query=f"""
+                            SELECT
+                                id, length_m, length_3857,
+                                class_, impedance_slope, impedance_slope_reverse,
+                                impedance_surface, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
+                                source, target, CAST(tags AS TEXT) AS tags, h3_3, h3_6
+                            FROM basic.segment
+                            WHERE h3_3 = {h3_index}
+                        """,
+                        uri=settings.POSTGRES_DATABASE_URI,
+                        schema_overrides=SEGMENT_DATA_SCHEMA,
+                    )
+                    segments_df[h3_index] = segments_df[h3_index].with_columns(
+                        pl.col("coordinates_3857").str.json_extract()
+                    )
+
+                    with open(f"{settings.CACHE_DIR}/{h3_index}.parquet", "wb") as file:
+                        segments_df[h3_index].write_parquet(file)
+
                 df_size += segments_df[h3_index].estimated_size("gb")
         except Exception as e:
             print(e)
@@ -287,6 +304,12 @@ class CRUDIsochrone:
 
         return table_name, len(obj_in.starting_points.latitude)
 
+    async def delete_input_table(self, table_name: str):
+        """Delete the input table after reading the relevant sub-network."""
+
+        await self.db_connection.execute(f'DROP TABLE temporal."{table_name}";')
+        await self.db_connection.commit()
+
     def compute_segment_cost(self, sub_network, mode, speed):
         """Compute the cost of a segment based on the mode, speed, impedance, etc."""
 
@@ -413,12 +436,16 @@ class CRUDIsochrone:
             # Create input table for isochrone origin points
             input_table, num_points = await self.create_input_table(obj_in)
 
+            # Read & process routing network to extract relevant sub-network
             sub_routing_network, origin_connector_ids, _, _ = await self.read_network(
                 routing_network,
                 obj_in,
                 input_table,
                 num_points,
             )
+
+            # Delete input table for isochrone origin points
+            await self.delete_input_table(input_table)
         except Exception as e:
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             await self.db_connection.rollback()
@@ -443,12 +470,14 @@ class CRUDIsochrone:
             isochrone_grid, isochrone_network = compute_isochrone(
                 edge_network_input=sub_routing_network,
                 start_vertices=origin_connector_ids,
-                travel_time=obj_in.travel_cost.max_traveltime
-                if is_travel_time_isochrone
-                else obj_in.travel_cost.max_distance,
-                speed=obj_in.travel_cost.speed / 3.6
-                if is_travel_time_isochrone
-                else None,
+                travel_time=(
+                    obj_in.travel_cost.max_traveltime
+                    if is_travel_time_isochrone
+                    else obj_in.travel_cost.max_distance
+                ),
+                speed=(
+                    obj_in.travel_cost.speed / 3.6 if is_travel_time_isochrone else None
+                ),
                 zoom=12,
                 use_distance=(not is_travel_time_isochrone),
             )
@@ -457,13 +486,17 @@ class CRUDIsochrone:
             if obj_in.isochrone_type == "polygon":
                 isochrone_shapes = generate_jsolines(
                     grid=isochrone_grid,
-                    travel_time=obj_in.travel_cost.max_traveltime
-                    if is_travel_time_isochrone
-                    else obj_in.travel_cost.max_distance,
+                    travel_time=(
+                        obj_in.travel_cost.max_traveltime
+                        if is_travel_time_isochrone
+                        else obj_in.travel_cost.max_distance
+                    ),
                     percentile=5,
-                    step=obj_in.travel_cost.traveltime_step
-                    if is_travel_time_isochrone
-                    else obj_in.travel_cost.distance_step,  # TODO Fix shape for distance cost based isochrones
+                    step=(
+                        obj_in.travel_cost.traveltime_step
+                        if is_travel_time_isochrone
+                        else obj_in.travel_cost.distance_step
+                    ),  # TODO Fix shape for distance cost based isochrones
                 )
                 print("Computed isochrone shapes.")
         except Exception as e:

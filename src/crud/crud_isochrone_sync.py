@@ -15,6 +15,7 @@ from src.schemas.isochrone import (
     IIsochroneActiveMobility,
     TravelTimeCostActiveMobility,
 )
+from src.utils import make_dir
 
 
 class FetchRoutingNetwork:
@@ -49,6 +50,9 @@ class FetchRoutingNetwork:
         segments_df = {}
         df_size = 0.0
         try:
+            # Create cache dir if it doesn't exist
+            make_dir(settings.CACHE_DIR)
+
             for index in tqdm(
                 range(len(h3_3_grid)), desc="Loading H3_3 grid", unit=" cell"
             ):
