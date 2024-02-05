@@ -4,13 +4,9 @@ import uuid
 from typing import Any
 
 import polars as pl
-from redis import Redis
-from sqlalchemy.ext.asyncio import AsyncSession
 from tqdm import tqdm
 
 from src.core.config import settings
-from src.core.isochrone import compute_isochrone
-from src.core.jsoline import generate_jsolines
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.schemas.isochrone import (
     SEGMENT_DATA_SCHEMA,
@@ -19,15 +15,14 @@ from src.schemas.isochrone import (
     IIsochroneActiveMobility,
     TravelTimeCostActiveMobility,
 )
-from src.schemas.status import ProcessingStatus
 from src.utils import make_dir
 
 
 class FetchRoutingNetwork:
-    def __init__(self, db_connection: AsyncSession):
-        self.db_connection = db_connection
+    def __init__(self, db_cursor):
+        self.db_cursor = db_cursor
 
-    async def fetch(self):
+    def fetch(self):
         """Fetch routing network (processed segments) and load into memory."""
 
         start_time = time.time()
@@ -42,7 +37,8 @@ class FetchRoutingNetwork:
                 SELECT g.h3_short FROM region r,
                 LATERAL temporal.fill_polygon_h3_3(r.geom) g;
             """
-            result = (await self.db_connection.execute(sql_get_h3_3_grid)).fetchall()
+            self.db_cursor.execute(sql_get_h3_3_grid)
+            result = self.db_cursor.fetchall()
             for h3_index in result:
                 if h3_index[0]:
                     h3_3_grid.append(h3_index[0])
@@ -98,12 +94,11 @@ class FetchRoutingNetwork:
 
 
 class CRUDIsochrone:
-    def __init__(self, db_connection: AsyncSession, redis: Redis) -> None:
+    def __init__(self, db_connection, db_cursor) -> None:
         self.db_connection = db_connection
-        self.redis = redis
-        self.routing_network = None
+        self.db_cursor = db_cursor
 
-    async def read_network(
+    def read_network(
         self,
         routing_network: dict,
         obj_in: IIsochroneActiveMobility,
@@ -148,9 +143,8 @@ class CRUDIsochrone:
             FROM cells
             GROUP BY h3_3;
         """
-        for h3_3_cell in (
-            await self.db_connection.execute(sql_get_relevant_cells)
-        ).fetchall():
+        self.db_cursor.execute(sql_get_relevant_cells)
+        for h3_3_cell in self.db_cursor.fetchall():
             h3_3_cells.add(h3_3_cell[0])
             for h3_6_cell in h3_3_cell[1]:
                 h3_6_cells.add(h3_6_cell)
@@ -193,9 +187,8 @@ class CRUDIsochrone:
                 '{",".join(valid_segment_classes)}'
             );
         """
-        result = (
-            await self.db_connection.execute(sql_get_artificial_segments)
-        ).fetchall()
+        self.db_cursor.execute(sql_get_artificial_segments)
+        result = self.db_cursor.fetchall()
         for a_seg in result:
             if a_seg[0] is not None:
                 origin_point_connectors.append(a_seg[10])
@@ -276,14 +269,14 @@ class CRUDIsochrone:
             origin_point_h3_3,
         )
 
-    async def create_input_table(self, obj_in: IIsochroneActiveMobility):
+    def create_input_table(self, obj_in: IIsochroneActiveMobility):
         """Create the input table for the isochrone calculation."""
 
         # Generate random table name
         table_name = str(uuid.uuid4()).replace("-", "_")
 
         # Create temporary table for storing isochrone starting points
-        await self.db_connection.execute(
+        self.db_cursor.execute(
             f"""
                 CREATE TABLE temporal.\"{table_name}\" (
                     id serial PRIMARY KEY,
@@ -300,22 +293,22 @@ class CRUDIsochrone:
             insert_string += (
                 f"(ST_SetSRID(ST_MakePoint({longitude}, {latitude}), 4326)),"
             )
-        await self.db_connection.execute(
+        self.db_cursor.execute(
             f"""
                 INSERT INTO temporal.\"{table_name}\" (geom)
                 VALUES {insert_string.rstrip(",")};
             """
         )
 
-        await self.db_connection.commit()
+        self.db_connection.commit()
 
         return table_name, len(obj_in.starting_points.latitude)
 
-    async def delete_input_table(self, table_name: str):
+    def delete_input_table(self, table_name: str):
         """Delete the input table after reading the relevant sub-network."""
 
-        await self.db_connection.execute(f'DROP TABLE temporal."{table_name}";')
-        await self.db_connection.commit()
+        self.db_cursor.execute(f'DROP TABLE temporal."{table_name}";')
+        self.db_connection.commit()
 
     def compute_segment_cost(self, sub_network, mode, speed):
         """Compute the cost of a segment based on the mode, speed, impedance, etc."""
@@ -373,158 +366,3 @@ class CRUDIsochrone:
             )
         else:
             return None
-
-    async def save_result(
-        self, obj_in: IIsochroneActiveMobility, shapes, network, grid
-    ):
-        """Save the result of the isochrone computation to the database."""
-
-        if obj_in.isochrone_type == "polygon":
-            # Save isochrone geometry data (shapes)
-            shapes = shapes["incremental"]
-            insert_string = ""
-            for i in shapes.index:
-                geom = shapes["geometry"][i]
-                minute = shapes["minute"][i]
-                insert_string += f"('{obj_in.layer_id}', ST_SetSRID(ST_GeomFromText('{geom}'), 4326), {minute}),"
-            insert_string = f"""
-                INSERT INTO {obj_in.result_table} (layer_id, geom, integer_attr1)
-                VALUES {insert_string.rstrip(",")};
-            """
-            await self.db_connection.execute(insert_string)
-            await self.db_connection.commit()
-        elif obj_in.isochrone_type == "network":
-            # Save isochrone network data
-            batch_size = 1000
-            insert_string = ""
-            for i in range(0, len(network["features"])):
-                coordinates = network["features"][i]["geometry"]["coordinates"]
-                cost = network["features"][i]["properties"]["cost"]
-                points_string = ""
-                for pair in coordinates:
-                    points_string += f"ST_MakePoint({pair[0]}, {pair[1]}),"
-                insert_string += f"""(
-                    '{obj_in.layer_id}',
-                    ST_Transform(ST_SetSRID(ST_MakeLine(ARRAY[{points_string.rstrip(',')}]), 3857), 4326),
-                    {cost}
-                ),"""
-                if i % batch_size == 0 or i == (len(network["features"]) - 1):
-                    insert_string = f"""
-                        INSERT INTO {obj_in.result_table} (layer_id, geom, float_attr1)
-                        VALUES {insert_string.rstrip(",")};
-                    """
-                    await self.db_connection.execute(insert_string)
-                    await self.db_connection.commit()
-                    insert_string = ""
-        else:
-            # Save isochrone grid data
-            pass
-
-    async def run(
-        self,
-        obj_in: IIsochroneActiveMobility,
-    ):
-        """Compute isochrones for the given request parameters."""
-
-        # Fetch routing network (processed segments) and load into memory
-        if self.routing_network is None:
-            self.routing_network = await FetchRoutingNetwork(self.db_connection).fetch()
-        routing_network = self.routing_network
-
-        total_start = time.time()
-
-        obj_in = IIsochroneActiveMobility(**obj_in)
-
-        # Read & process routing network to extract relevant sub-network
-        start_time = time.time()
-        sub_routing_network = None
-        origin_connector_ids = None
-        try:
-            # Create input table for isochrone origin points
-            input_table, num_points = await self.create_input_table(obj_in)
-
-            # Read & process routing network to extract relevant sub-network
-            sub_routing_network, origin_connector_ids, _, _ = await self.read_network(
-                routing_network,
-                obj_in,
-                input_table,
-                num_points,
-            )
-
-            # Delete input table for isochrone origin points
-            await self.delete_input_table(input_table)
-        except Exception as e:
-            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
-            await self.db_connection.rollback()
-            if type(e) == DisconnectedOriginError:
-                self.redis.set(
-                    str(obj_in.layer_id), ProcessingStatus.disconnected_origin.value
-                )
-            print(e)
-            return
-        print(f"Network read time: {round(time.time() - start_time, 2)} sec")
-
-        # Compute isochrone utilizing processed sub-network
-        start_time = time.time()
-        isochrone_grid = None
-        isochrone_network = None
-        isochrone_shapes = None
-        try:
-            is_travel_time_isochrone = (
-                type(obj_in.travel_cost) == TravelTimeCostActiveMobility
-            )
-
-            isochrone_grid, isochrone_network = compute_isochrone(
-                edge_network_input=sub_routing_network,
-                start_vertices=origin_connector_ids,
-                travel_time=(
-                    obj_in.travel_cost.max_traveltime
-                    if is_travel_time_isochrone
-                    else obj_in.travel_cost.max_distance
-                ),
-                speed=(
-                    obj_in.travel_cost.speed / 3.6 if is_travel_time_isochrone else None
-                ),
-                zoom=12,
-                use_distance=(not is_travel_time_isochrone),
-            )
-            print("Computed isochrone grid & network.")
-
-            if obj_in.isochrone_type == "polygon":
-                isochrone_shapes = generate_jsolines(
-                    grid=isochrone_grid,
-                    travel_time=(
-                        obj_in.travel_cost.max_traveltime
-                        if is_travel_time_isochrone
-                        else obj_in.travel_cost.max_distance
-                    ),
-                    percentile=5,
-                    step=(
-                        obj_in.travel_cost.traveltime_step
-                        if is_travel_time_isochrone
-                        else obj_in.travel_cost.distance_step
-                    ),  # TODO Fix shape for distance cost based isochrones
-                )
-                print("Computed isochrone shapes.")
-        except Exception as e:
-            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
-            print(e)
-            return
-        print(f"Isochrone computation time: {round(time.time() - start_time, 2)} sec")
-
-        # Write output of isochrone computation to database
-        start_time = time.time()
-        try:
-            await self.save_result(
-                obj_in, isochrone_shapes, isochrone_network, isochrone_grid
-            )
-        except Exception as e:
-            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
-            await self.db_connection.rollback()
-            print(e)
-            return
-        print(f"Result save time: {round(time.time() - start_time, 2)} sec")
-
-        print(f"Total time: {round(time.time() - total_start, 2)} sec")
-
-        self.redis.set(str(obj_in.layer_id), ProcessingStatus.success.value)
