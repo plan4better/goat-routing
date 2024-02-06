@@ -1,13 +1,11 @@
 import json
 
-from src.crud.crud_isochrone import CRUDIsochrone
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 from redis import Redis
 
 from src.core.config import settings
 from src.core.worker import run_isochrone
-from src.db.session import async_session
 from src.schemas.isochrone import IIsochroneActiveMobility
 from src.schemas.isochrone import request_examples as active_mobility_request_examples
 from src.schemas.status import ProcessingStatus
@@ -18,9 +16,6 @@ redis = Redis(
     port=settings.REDIS_PORT,
     db=settings.REDIS_DB,
 )
-
-db_connection = async_session()
-crud_isochrone = CRUDIsochrone(db_connection, redis)
 
 
 @router.post(

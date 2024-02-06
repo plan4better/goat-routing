@@ -202,15 +202,15 @@ class IIsochroneActiveMobility(BaseModel):
 
 request_examples = {
     "isochrone_active_mobility": {
-        # 1. Single isochrone for walking
-        "single_point_walking": {
-            "summary": "Single point isochrone walking",
+        # 1. Single isochrone for walking (time based)
+        "single_point_walking_time": {
+            "summary": "Single point isochrone walking (time based)",
             "value": {
-                "starting_points": {"latitude": [13.4050], "longitude": [52.5200]},
+                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
                 "routing_type": "walking",
                 "travel_cost": {
                     "max_traveltime": 30,
-                    "traveltime_step": 10,
+                    "traveltime_step": 5,
                     "speed": 5,
                 },
                 "isochrone_type": "polygon",
@@ -219,11 +219,27 @@ request_examples = {
                 "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
             },
         },
-        # 2. Single isochrone for cycling
+        # 2. Single isochrone for walking (distance based)
+        "single_point_walking_distance": {
+            "summary": "Single point isochrone walking (distance based)",
+            "value": {
+                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "routing_type": "walking",
+                "travel_cost": {
+                    "max_distance": 2500,
+                    "distance_step": 100,
+                },
+                "isochrone_type": "polygon",
+                "polygon_difference": True,
+                "result_table": "polygon_744e4fd1685c495c8b02efebce875359",
+                "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
+            },
+        },
+        # 3. Single isochrone for cycling
         "single_point_cycling": {
             "summary": "Single point isochrone cycling",
             "value": {
-                "starting_points": {"latitude": [13.4050], "longitude": [52.5200]},
+                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
                 "routing_type": "bicycle",
                 "travel_cost": {
                     "max_traveltime": 15,
@@ -236,11 +252,11 @@ request_examples = {
                 "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
             },
         },
-        # 3. Single isochrone for walking with scenario
+        # 4. Single isochrone for walking with scenario
         "single_point_walking_scenario": {
             "summary": "Single point isochrone walking",
             "value": {
-                "starting_points": {"latitude": [13.4050], "longitude": [52.5200]},
+                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
                 "routing_type": "walking",
                 "travel_cost": {
                     "max_traveltime": 30,
@@ -254,24 +270,12 @@ request_examples = {
                 "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
             },
         },
-        # 4. Multi-isochrone walking with more than one starting point
+        # 5. Multi-isochrone walking with more than one starting point
         "multi_point_walking": {
             "summary": "Multi point isochrone walking",
             "value": {
                 "starting_points": {
                     "latitude": [
-                        13.4050,
-                        13.4060,
-                        13.4070,
-                        13.4080,
-                        13.4090,
-                        13.4100,
-                        13.4110,
-                        13.4120,
-                        13.4130,
-                        13.4140,
-                    ],
-                    "longitude": [
                         52.5200,
                         52.5210,
                         52.5220,
@@ -282,6 +286,18 @@ request_examples = {
                         52.5270,
                         52.5280,
                         52.5290,
+                    ],
+                    "longitude": [
+                        13.4050,
+                        13.4060,
+                        13.4070,
+                        13.4080,
+                        13.4090,
+                        13.4100,
+                        13.4110,
+                        13.4120,
+                        13.4130,
+                        13.4140,
                     ],
                 },
                 "routing_type": "walking",
@@ -296,24 +312,12 @@ request_examples = {
                 "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
             },
         },
-        # 5. Multi-isochrone cycling with more than one starting point
+        # 6. Multi-isochrone cycling with more than one starting point
         "multi_point_cycling": {
             "summary": "Multi point isochrone cycling",
             "value": {
                 "starting_points": {
                     "latitude": [
-                        13.4050,
-                        13.4060,
-                        13.4070,
-                        13.4080,
-                        13.4090,
-                        13.4100,
-                        13.4110,
-                        13.4120,
-                        13.4130,
-                        13.4140,
-                    ],
-                    "longitude": [
                         52.5200,
                         52.5210,
                         52.5220,
@@ -324,6 +328,18 @@ request_examples = {
                         52.5270,
                         52.5280,
                         52.5290,
+                    ],
+                    "longitude": [
+                        13.4050,
+                        13.4060,
+                        13.4070,
+                        13.4080,
+                        13.4090,
+                        13.4100,
+                        13.4110,
+                        13.4120,
+                        13.4130,
+                        13.4140,
                     ],
                 },
                 "routing_type": "bicycle",

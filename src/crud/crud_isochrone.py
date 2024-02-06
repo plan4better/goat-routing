@@ -503,7 +503,7 @@ class CRUDIsochrone:
                         obj_in.travel_cost.traveltime_step
                         if is_travel_time_isochrone
                         else obj_in.travel_cost.distance_step
-                    ),  # TODO Fix shape for distance cost based isochrones
+                    ),
                 )
                 print("Computed isochrone shapes.")
         except Exception as e:

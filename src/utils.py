@@ -78,7 +78,7 @@ def compute_r5_surface(grid: dict, percentile: int) -> np.array:
         grid_percentiles = np.reshape(grid["data"], (grid["depth"], -1))
         surface = grid_percentiles[percentile_index]
 
-    return surface.astype(np.uint8)
+    return surface.astype(np.uint16)
 
 
 @njit(cache=True)
