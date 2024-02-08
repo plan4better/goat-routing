@@ -381,7 +381,9 @@ class CRUDIsochrone:
 
         if obj_in.isochrone_type == "polygon":
             # Save isochrone geometry data (shapes)
-            shapes = shapes["incremental"]
+            shapes = (
+                shapes["incremental"] if obj_in.polygon_difference else shapes["full"]
+            )
             insert_string = ""
             for i in shapes.index:
                 geom = shapes["geometry"][i]
