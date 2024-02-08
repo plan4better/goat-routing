@@ -381,19 +381,47 @@ class CRUDIsochrone:
 
         if obj_in.isochrone_type == "polygon":
             # Save isochrone geometry data (shapes)
-            shapes = (
-                shapes["incremental"] if obj_in.polygon_difference else shapes["full"]
-            )
+            shapes = shapes["full"]
+
             insert_string = ""
             for i in shapes.index:
                 geom = shapes["geometry"][i]
                 minute = shapes["minute"][i]
-                insert_string += f"('{obj_in.layer_id}', ST_SetSRID(ST_GeomFromText('{geom}'), 4326), {minute}),"
-            insert_string = f"""
+                insert_string += f"SELECT ST_SetSRID(ST_GeomFromText('{geom}'), 4326) AS geom, {minute} AS minute UNION ALL "
+            insert_string, _, _ = insert_string.rpartition(" UNION ALL ")
+
+            sql_insert_into_table = f"""
+                WITH isochrones AS
+                (
+                    SELECT p."minute", (ST_DUMP(p.geom)).geom
+                    FROM (
+                        {insert_string}
+                    ) p
+                ),
+                isochrones_filled AS
+                (
+                    SELECT "minute", ST_COLLECT(ST_MAKEPOLYGON(st_exteriorring(geom))) geom
+                    FROM isochrones
+                    GROUP BY "minute"
+                    ORDER BY "minute"
+                ),
+                isochrones_with_id AS
+                (
+                    SELECT row_number() over() id, *
+                    FROM isochrones_filled
+                )
                 INSERT INTO {obj_in.result_table} (layer_id, geom, integer_attr1)
-                VALUES {insert_string.rstrip(",")};
+                SELECT '{obj_in.layer_id}', COALESCE(j.geom, a.geom) AS geom, a.MINUTE
+                FROM isochrones_with_id a
+                LEFT JOIN LATERAL
+                (
+                    SELECT ST_DIFFERENCE(a.geom, b.geom) AS geom
+                    FROM isochrones_with_id b
+                    WHERE a.id - 1 = b.id
+                ) j ON {"TRUE" if obj_in.polygon_difference else "FALSE"};
             """
-            await self.db_connection.execute(insert_string)
+
+            await self.db_connection.execute(sql_insert_into_table)
             await self.db_connection.commit()
         elif obj_in.isochrone_type == "network":
             # Save isochrone network data
