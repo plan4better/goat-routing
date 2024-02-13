@@ -529,11 +529,7 @@ class CRUDIsochrone:
                         else obj_in.travel_cost.max_distance
                     ),
                     percentile=5,
-                    step=(
-                        obj_in.travel_cost.traveltime_step
-                        if is_travel_time_isochrone
-                        else obj_in.travel_cost.distance_step
-                    ),
+                    steps=obj_in.travel_cost.steps,
                 )
                 print("Computed isochrone shapes.")
         except Exception as e:
