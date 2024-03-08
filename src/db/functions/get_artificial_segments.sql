@@ -1,5 +1,5 @@
-DROP TYPE IF EXISTS temporal.origin_segment;
-CREATE TYPE temporal.origin_segment AS (
+DROP TYPE IF EXISTS origin_segment;
+CREATE TYPE origin_segment AS (
     id int, class_ text, impedance_slope float8, impedance_slope_reverse float8,
     impedance_surface float8, source int, target int, tags text,
     geom geometry, h3_3 int2, h3_6 int4, fraction float[], fraction_geom geometry[],
@@ -7,8 +7,8 @@ CREATE TYPE temporal.origin_segment AS (
 );
 
 
-DROP TYPE IF EXISTS temporal.artificial_segment CASCADE;
-CREATE TYPE temporal.artificial_segment AS (
+DROP TYPE IF EXISTS artificial_segment CASCADE;
+CREATE TYPE artificial_segment AS (
     point_id int2, point_geom geometry, point_h3_10 h3index, point_h3_3 int, old_id int,
     id int, length_m float, length_3857 float, class_ text, impedance_slope float8,
     impedance_slope_reverse float8, impedance_surface float8, coordinates_3857 jsonb,
@@ -16,19 +16,19 @@ CREATE TYPE temporal.artificial_segment AS (
 );
 
 
-DROP FUNCTION IF EXISTS temporal.get_artificial_segments;
-CREATE OR REPLACE FUNCTION temporal.get_artificial_segments(
+DROP FUNCTION IF EXISTS get_artificial_segments;
+CREATE OR REPLACE FUNCTION get_artificial_segments(
     input_table text,
     num_points integer,
     classes text
 )
-RETURNS SETOF temporal.artificial_segment
+RETURNS SETOF artificial_segment
 LANGUAGE plpgsql
 AS $function$
 DECLARE
     custom_cursor REFCURSOR;
-	origin_segment temporal.origin_segment;
-	artificial_segment temporal.artificial_segment;
+	origin_segment origin_segment;
+	artificial_segment artificial_segment;
 
     -- Increment everytime a new artificial segment is created
     artificial_seg_index int = 1000000000; -- Defaults to 1 billion
@@ -37,7 +37,7 @@ DECLARE
     artificial_con_index int = 1000000000; -- Defaults to 1 billion
 
     -- Increment everytime a new artificial origin node is created (for isochrone starting points)
-    artifical_origin_index int = 2000000000; -- Defaults to 1 billion
+    artifical_origin_index int = 2000000000; -- Defaults to 2 billion
 
     fraction float;
     new_geom geometry;

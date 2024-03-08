@@ -181,7 +181,7 @@ class CRUDIsochrone:
                 impedance_slope_reverse, impedance_surface,
                 CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
                 source, target, tags, h3_3, h3_6, point_h3_10, point_h3_3
-            FROM temporal.get_artificial_segments(
+            FROM get_artificial_segments(
                 '{input_table}',
                 {num_points},
                 '{",".join(valid_segment_classes)}'
