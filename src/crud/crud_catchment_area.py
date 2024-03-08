@@ -13,14 +13,14 @@ from tqdm import tqdm
 from src.core.config import settings
 from src.core.isochrone import compute_isochrone, compute_isochrone_h3
 from src.core.jsoline import generate_jsolines
-from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
-from src.schemas.isochrone import (
+from src.schemas.catchment_area import (
     SEGMENT_DATA_SCHEMA,
     VALID_BICYCLE_CLASSES,
     VALID_WALKING_CLASSES,
-    IIsochroneActiveMobility,
+    ICatchmentAreaActiveMobility,
     TravelTimeCostActiveMobility,
 )
+from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.schemas.status import ProcessingStatus
 from src.utils import make_dir
 
@@ -99,7 +99,7 @@ class FetchRoutingNetwork:
         return segments_df
 
 
-class CRUDIsochrone:
+class CRUDCatchmentArea:
     def __init__(self, db_connection: AsyncSession, redis: Redis) -> None:
         self.db_connection = db_connection
         self.redis = redis
@@ -108,11 +108,11 @@ class CRUDIsochrone:
     async def read_network(
         self,
         routing_network: dict,
-        obj_in: IIsochroneActiveMobility,
+        obj_in: ICatchmentAreaActiveMobility,
         input_table: str,
         num_points: int,
     ) -> Any:
-        """Read relevant sub-network for isochrone calculation from polars dataframe."""
+        """Read relevant sub-network for catchment area calculation from polars dataframe."""
 
         # Get valid segment classes based on transport mode
         valid_segment_classes = (
@@ -129,7 +129,7 @@ class CRUDIsochrone:
         else:
             buffer_dist = obj_in.travel_cost.max_distance
 
-        # Identify H3_3 & H3_6 cells relevant to this isochrone calculation
+        # Identify H3_3 & H3_6 cells relevant to this catchment area calculation
         h3_3_cells = set()
         h3_6_cells = set()
 
@@ -164,7 +164,7 @@ class CRUDIsochrone:
 
             if sub_df is None:
                 raise BufferExceedsNetworkError(
-                    "Isochrone buffer exceeds available H3_3 network cells."
+                    "Catchment area buffer exceeds available H3_3 network cells."
                 )
 
             sub_df = sub_df.filter(
@@ -247,20 +247,20 @@ class CRUDIsochrone:
 
         # Compute cost for each segment
         if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
-            # If producing a travel time cost based isochrone, compute segment cost accordingly
+            # If producing a travel time cost based catchment area, compute segment cost accordingly
             sub_network = self.compute_segment_cost(
                 sub_network,
                 obj_in.routing_type,
                 obj_in.travel_cost.speed / 3.6,
             )
         else:
-            # If producing a distance cost based isochrone, use the segment length as cost
+            # If producing a distance cost based catchment area, use the segment length as cost
             sub_network = sub_network.with_columns(
                 pl.col("length_m").alias("cost"),
                 pl.col("length_m").alias("reverse_cost"),
             )
 
-        # Select columns required for computing isochrone and convert to dictionary of numpy arrays
+        # Select columns required for computing catchment area and convert to dictionary of numpy arrays
         sub_network = {
             "id": sub_network.get_column("id").to_numpy().copy(),
             "source": sub_network.get_column("source").to_numpy().copy(),
@@ -278,13 +278,13 @@ class CRUDIsochrone:
             origin_point_h3_3,
         )
 
-    async def create_input_table(self, obj_in: IIsochroneActiveMobility):
-        """Create the input table for the isochrone calculation."""
+    async def create_input_table(self, obj_in: ICatchmentAreaActiveMobility):
+        """Create the input table for the catchment area calculation."""
 
         # Generate random table name
         table_name = str(uuid.uuid4()).replace("-", "_")
 
-        # Create temporary table for storing isochrone starting points
+        # Create temporary table for storing catchment area starting points
         await self.db_connection.execute(
             f"""
                 CREATE TABLE temporal.\"{table_name}\" (
@@ -294,7 +294,7 @@ class CRUDIsochrone:
             """
         )
 
-        # Insert isochrone starting points into the temporary table
+        # Insert catchment area starting points into the temporary table
         insert_string = ""
         for i in range(len(obj_in.starting_points.latitude)):
             latitude = obj_in.starting_points.latitude[i]
@@ -377,9 +377,9 @@ class CRUDIsochrone:
             return None
 
     async def get_h3_10_grid(
-        self, db_connection, obj_in: IIsochroneActiveMobility, origin_h3_10: str
+        self, db_connection, obj_in: ICatchmentAreaActiveMobility, origin_h3_10: str
     ):
-        """Get H3_10 cell grid required for computing a grid-type isochrone."""
+        """Get H3_10 cell grid required for computing a grid-type catchment area."""
 
         # Compute buffer distance for identifying relevant H3_10 cells
         if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
@@ -389,7 +389,7 @@ class CRUDIsochrone:
         else:
             buffer_dist = obj_in.travel_cost.max_distance
 
-        # Fetch H3_10 cell grid relevant to the isochrone calculation
+        # Fetch H3_10 cell grid relevant to the catchment area calculation
         sql_get_relevant_cells = f"""
             WITH cells AS (
                 SELECT DISTINCT(h3_grid_disk(sub.origin_h3_index, radius.value)) AS h3_index
@@ -416,12 +416,12 @@ class CRUDIsochrone:
         return h3_index, x_centroids, y_centroids
 
     async def save_result(
-        self, obj_in: IIsochroneActiveMobility, shapes, network, grid_index, grid
+        self, obj_in: ICatchmentAreaActiveMobility, shapes, network, grid_index, grid
     ):
-        """Save the result of the isochrone computation to the database."""
+        """Save the result of the catchment area computation to the database."""
 
-        if obj_in.isochrone_type == "polygon":
-            # Save isochrone geometry data (shapes)
+        if obj_in.catchment_area_type == "polygon":
+            # Save catchment area geometry data (shapes)
             shapes = shapes["full"]
 
             insert_string = ""
@@ -464,8 +464,8 @@ class CRUDIsochrone:
 
             await self.db_connection.execute(sql_insert_into_table)
             await self.db_connection.commit()
-        elif obj_in.isochrone_type == "network":
-            # Save isochrone network data
+        elif obj_in.catchment_area_type == "network":
+            # Save catchment area network data
             batch_size = 1000
             insert_string = ""
             for i in range(0, len(network["features"])):
@@ -488,7 +488,7 @@ class CRUDIsochrone:
                     await self.db_connection.commit()
                     insert_string = ""
         else:
-            # Save isochrone grid data
+            # Save catchment area grid data
             batch_size = 1000
             insert_string = ""
             for i in range(0, len(grid_index)):
@@ -517,9 +517,9 @@ class CRUDIsochrone:
 
     async def run(
         self,
-        obj_in: IIsochroneActiveMobility,
+        obj_in: ICatchmentAreaActiveMobility,
     ):
-        """Compute isochrones for the given request parameters."""
+        """Compute catchment areas for the given request parameters."""
 
         # Fetch routing network (processed segments) and load into memory
         if self.routing_network is None:
@@ -528,14 +528,14 @@ class CRUDIsochrone:
 
         total_start = time.time()
 
-        obj_in = IIsochroneActiveMobility(**obj_in)
+        obj_in = ICatchmentAreaActiveMobility(**obj_in)
 
         # Read & process routing network to extract relevant sub-network
         start_time = time.time()
         sub_routing_network = None
         origin_connector_ids = None
         try:
-            # Create input table for isochrone origin points
+            # Create input table for catchment area origin points
             input_table, num_points = await self.create_input_table(obj_in)
 
             # Read & process routing network to extract relevant sub-network
@@ -548,7 +548,7 @@ class CRUDIsochrone:
                 )
             )
 
-            # Delete input table for isochrone origin points
+            # Delete input table for catchment area origin points
             await self.delete_input_table(input_table)
         except Exception as e:
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
@@ -561,89 +561,91 @@ class CRUDIsochrone:
             return
         print(f"Network read time: {round(time.time() - start_time, 2)} sec")
 
-        # Compute isochrone utilizing processed sub-network
+        # Compute catchment area utilizing processed sub-network
         start_time = time.time()
-        isochrone_grid = None
-        isochrone_network = None
-        isochrone_shapes = None
+        catchment_area_grid = None
+        catchment_area_network = None
+        catchment_area_shapes = None
         try:
-            is_travel_time_isochrone = (
+            is_travel_time_catchment_area = (
                 type(obj_in.travel_cost) == TravelTimeCostActiveMobility
             )
 
-            isochrone_grid_index = None
-            if obj_in.isochrone_type != "rectangular_grid":
-                isochrone_grid, isochrone_network = compute_isochrone(
+            catchment_area_grid_index = None
+            if obj_in.catchment_area_type != "rectangular_grid":
+                catchment_area_grid, catchment_area_network = compute_isochrone(
                     edge_network_input=sub_routing_network,
                     start_vertices=origin_connector_ids,
                     travel_time=(
                         obj_in.travel_cost.max_traveltime
-                        if is_travel_time_isochrone
+                        if is_travel_time_catchment_area
                         else obj_in.travel_cost.max_distance
                     ),
                     speed=(
                         obj_in.travel_cost.speed / 3.6
-                        if is_travel_time_isochrone
+                        if is_travel_time_catchment_area
                         else None
                     ),
                     zoom=12,
-                    use_distance=(not is_travel_time_isochrone),
+                    use_distance=(not is_travel_time_catchment_area),
                 )
             else:
-                isochrone_grid_index, h3_centroid_x, h3_centroid_y = (
+                catchment_area_grid_index, h3_centroid_x, h3_centroid_y = (
                     await self.get_h3_10_grid(
                         self.db_connection,
                         obj_in=obj_in,
                         origin_h3_10=origin_point_h3_10,
                     )
                 )
-                isochrone_grid = compute_isochrone_h3(
+                catchment_area_grid = compute_isochrone_h3(
                     edge_network_input=sub_routing_network,
                     start_vertices=origin_connector_ids,
                     travel_time=(
                         obj_in.travel_cost.max_traveltime
-                        if is_travel_time_isochrone
+                        if is_travel_time_catchment_area
                         else obj_in.travel_cost.max_distance
                     ),
                     speed=(
                         obj_in.travel_cost.speed / 3.6
-                        if is_travel_time_isochrone
+                        if is_travel_time_catchment_area
                         else None
                     ),
                     centroid_x=h3_centroid_x,
                     centroid_y=h3_centroid_y,
                     zoom=12,
-                    use_distance=(not is_travel_time_isochrone),
+                    use_distance=(not is_travel_time_catchment_area),
                 )
-            print("Computed isochrone grid & network.")
+            print("Computed catchment area grid & network.")
 
-            if obj_in.isochrone_type == "polygon":
-                isochrone_shapes = generate_jsolines(
-                    grid=isochrone_grid,
+            if obj_in.catchment_area_type == "polygon":
+                catchment_area_shapes = generate_jsolines(
+                    grid=catchment_area_grid,
                     travel_time=(
                         obj_in.travel_cost.max_traveltime
-                        if is_travel_time_isochrone
+                        if is_travel_time_catchment_area
                         else obj_in.travel_cost.max_distance
                     ),
                     percentile=5,
                     steps=obj_in.travel_cost.steps,
                 )
-                print("Computed isochrone shapes.")
+                print("Computed catchment area shapes.")
         except Exception as e:
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             print(e)
             return
-        print(f"Isochrone computation time: {round(time.time() - start_time, 2)} sec")
+        print(
+            f"Catchment area computation time: {round(time.time() - start_time, 2)} sec"
+        )
 
-        # Write output of isochrone computation to database
+        # Write output of catchment area computation to database
         start_time = time.time()
         try:
             await self.save_result(
                 obj_in,
-                isochrone_shapes,
-                isochrone_network,
-                isochrone_grid_index,
-                isochrone_grid,
+                catchment_area_shapes,
+                catchment_area_network,
+                catchment_area_grid_index,
+                catchment_area_grid,
             )
         except Exception as e:
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)

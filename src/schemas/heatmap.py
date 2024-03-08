@@ -1,4 +1,4 @@
-from src.schemas.isochrone import (
+from src.schemas.catchment_area import (
     RoutingActiveMobilityType,
     TravelTimeCostActiveMobility,
 )

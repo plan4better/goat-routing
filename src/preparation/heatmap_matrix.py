@@ -4,7 +4,7 @@ import psycopg2
 
 from src.core.config import settings
 from src.preparation.heatmap_matrix_process import HeatmapMatrixProcess
-from src.schemas.isochrone import RoutingActiveMobilityType
+from src.schemas.catchment_area import RoutingActiveMobilityType
 
 
 class HeatmapMatrixPreparation:

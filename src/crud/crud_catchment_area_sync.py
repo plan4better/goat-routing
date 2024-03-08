@@ -7,14 +7,14 @@ import polars as pl
 from tqdm import tqdm
 
 from src.core.config import settings
-from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
-from src.schemas.isochrone import (
+from src.schemas.catchment_area import (
     SEGMENT_DATA_SCHEMA,
     VALID_BICYCLE_CLASSES,
     VALID_WALKING_CLASSES,
-    IIsochroneActiveMobility,
+    ICatchmentAreaActiveMobility,
     TravelTimeCostActiveMobility,
 )
+from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.utils import make_dir
 
 
@@ -93,7 +93,7 @@ class FetchRoutingNetwork:
         return segments_df
 
 
-class CRUDIsochrone:
+class CRUDCatchmentArea:
     def __init__(self, db_connection, db_cursor) -> None:
         self.db_connection = db_connection
         self.db_cursor = db_cursor
@@ -101,11 +101,11 @@ class CRUDIsochrone:
     def read_network(
         self,
         routing_network: dict,
-        obj_in: IIsochroneActiveMobility,
+        obj_in: ICatchmentAreaActiveMobility,
         input_table: str,
         num_points: int,
     ) -> Any:
-        """Read relevant sub-network for isochrone calculation from polars dataframe."""
+        """Read relevant sub-network for catchment area calculation from polars dataframe."""
 
         # Get valid segment classes based on transport mode
         valid_segment_classes = (
@@ -122,7 +122,7 @@ class CRUDIsochrone:
         else:
             buffer_dist = obj_in.travel_cost.max_distance
 
-        # Identify H3_3 & H3_6 cells relevant to this isochrone calculation
+        # Identify H3_3 & H3_6 cells relevant to this catchment area calculation
         h3_3_cells = set()
         h3_6_cells = set()
 
@@ -156,7 +156,7 @@ class CRUDIsochrone:
 
             if sub_df is None:
                 raise BufferExceedsNetworkError(
-                    "Isochrone buffer exceeds available H3_3 network cells."
+                    "Catchment area buffer exceeds available H3_3 network cells."
                 )
 
             sub_df = sub_df.filter(
@@ -238,20 +238,20 @@ class CRUDIsochrone:
 
         # Compute cost for each segment
         if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
-            # If producing a travel time cost based isochrone, compute segment cost accordingly
+            # If producing a travel time cost based catchment area, compute segment cost accordingly
             sub_network = self.compute_segment_cost(
                 sub_network,
                 obj_in.routing_type,
                 obj_in.travel_cost.speed / 3.6,
             )
         else:
-            # If producing a distance cost based isochrone, use the segment length as cost
+            # If producing a distance cost based catchment area, use the segment length as cost
             sub_network = sub_network.with_columns(
                 pl.col("length_m").alias("cost"),
                 pl.col("length_m").alias("reverse_cost"),
             )
 
-        # Select columns required for computing isochrone and convert to dictionary of numpy arrays
+        # Select columns required for computing catchment area and convert to dictionary of numpy arrays
         sub_network = {
             "id": sub_network.get_column("id").to_numpy().copy(),
             "source": sub_network.get_column("source").to_numpy().copy(),
@@ -269,13 +269,13 @@ class CRUDIsochrone:
             origin_point_h3_3,
         )
 
-    def create_input_table(self, obj_in: IIsochroneActiveMobility):
-        """Create the input table for the isochrone calculation."""
+    def create_input_table(self, obj_in: ICatchmentAreaActiveMobility):
+        """Create the input table for the catchment area calculation."""
 
         # Generate random table name
         table_name = str(uuid.uuid4()).replace("-", "_")
 
-        # Create temporary table for storing isochrone starting points
+        # Create temporary table for storing catchment area starting points
         self.db_cursor.execute(
             f"""
                 CREATE TABLE temporal.\"{table_name}\" (
@@ -285,7 +285,7 @@ class CRUDIsochrone:
             """
         )
 
-        # Insert isochrone starting points into the temporary table
+        # Insert catchment area starting points into the temporary table
         insert_string = ""
         for i in range(len(obj_in.starting_points.latitude)):
             latitude = obj_in.starting_points.latitude[i]

@@ -11,15 +11,15 @@ from src.core.isochrone import (
     network_to_grid_h3,
     prepare_network_isochrone,
 )
-from src.crud.crud_isochrone_sync import CRUDIsochrone, FetchRoutingNetwork
-from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
-from src.schemas.heatmap import ROUTING_COST_CONFIG
-from src.schemas.isochrone import (
-    IIsochroneActiveMobility,
-    IsochroneStartingPoints,
-    IsochroneType,
+from src.crud.crud_catchment_area_sync import CRUDCatchmentArea, FetchRoutingNetwork
+from src.schemas.catchment_area import (
+    CatchmentAreaStartingPoints,
+    CatchmentAreaType,
+    ICatchmentAreaActiveMobility,
     RoutingActiveMobilityType,
 )
+from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
+from src.schemas.heatmap import ROUTING_COST_CONFIG
 
 
 class HeatmapMatrixProcess:
@@ -39,10 +39,10 @@ class HeatmapMatrixProcess:
             routing_type.value
         ].max_traveltime * ((ROUTING_COST_CONFIG[routing_type.value].speed * 1000) / 60)
 
-    def generate_multi_isochrone_request(
+    def generate_multi_catchment_area_request(
         self, db_cursor, h3_6_index: str, routing_type: RoutingActiveMobilityType
     ):
-        """Produce a multi-isochrone request for a given H3_6 index and routing type."""
+        """Produce a multi-catchment area request for a given H3_6 index and routing type."""
 
         origin_lat = []
         origin_lng = []
@@ -64,16 +64,16 @@ class HeatmapMatrixProcess:
             origin_lat.append(centroid[1])
             origin_lng.append(centroid[0])
 
-        # Produce final IIsochroneActiveMobility object (request for CRUDIsochrone)
-        return IIsochroneActiveMobility(
-            starting_points=IsochroneStartingPoints(
+        # Produce final ICatchmentAreaActiveMobility object (request for CRUDCatchmentArea)
+        return ICatchmentAreaActiveMobility(
+            starting_points=CatchmentAreaStartingPoints(
                 latitude=origin_lat,
                 longitude=origin_lng,
             ),
             routing_type=routing_type,
             travel_cost=ROUTING_COST_CONFIG[routing_type.value],
             scenario_id=None,
-            isochrone_type=IsochroneType.polygon,
+            catchment_area_type=CatchmentAreaType.polygon,
             polygon_difference=True,
             result_table="",
             layer_id=None,
@@ -145,7 +145,7 @@ class HeatmapMatrixProcess:
         db_connection = psycopg2.connect(settings.POSTGRES_DATABASE_URI)
         db_cursor = db_connection.cursor()
 
-        crud_isochrone = CRUDIsochrone(db_connection, db_cursor)
+        crud_catchment_area = CRUDCatchmentArea(db_connection, db_cursor)
 
         # Fetch routing network (processed segments) and load into memory
         if self.routing_network is None:
@@ -156,7 +156,7 @@ class HeatmapMatrixProcess:
         ):
             h3_6_index = self.chunk[index]
 
-            isochrone_request = self.generate_multi_isochrone_request(
+            catchment_area_request = self.generate_multi_catchment_area_request(
                 db_cursor=db_cursor,
                 h3_6_index=h3_6_index,
                 routing_type=self.routing_type,
@@ -167,9 +167,9 @@ class HeatmapMatrixProcess:
             origin_point_h3_10 = None
             origin_point_h3_3 = None
             try:
-                # Create input table for isochrone origin points
-                input_table, num_points = crud_isochrone.create_input_table(
-                    isochrone_request
+                # Create input table for catchment area origin points
+                input_table, num_points = crud_catchment_area.create_input_table(
+                    catchment_area_request
                 )
 
                 # Read & process routing network to extract relevant sub-network
@@ -178,15 +178,15 @@ class HeatmapMatrixProcess:
                     origin_connector_ids,
                     origin_point_h3_10,
                     origin_point_h3_3,
-                ) = crud_isochrone.read_network(
+                ) = crud_catchment_area.read_network(
                     self.routing_network,
-                    isochrone_request,
+                    catchment_area_request,
                     input_table,
                     num_points,
                 )
 
-                # Delete input table for isochrone origin points
-                crud_isochrone.delete_input_table(input_table)
+                # Delete input table for catchment area origin points
+                crud_catchment_area.delete_input_table(input_table)
             except Exception as e:
                 db_connection.rollback()
                 if isinstance(e, DisconnectedOriginError):
@@ -235,7 +235,7 @@ class HeatmapMatrixProcess:
                 distances_list = dijkstra_h3(
                     start_vertices_ids,
                     adj_list,
-                    isochrone_request.travel_cost.max_traveltime,
+                    catchment_area_request.travel_cost.max_traveltime,
                     False,
                 )
 
@@ -261,8 +261,8 @@ class HeatmapMatrixProcess:
                         geom_array=geom_array,
                         distances=distances_list[i],
                         node_coords=node_coords,
-                        speed=isochrone_request.travel_cost.speed / 3.6,
-                        max_traveltime=isochrone_request.travel_cost.max_traveltime,
+                        speed=catchment_area_request.travel_cost.speed / 3.6,
+                        max_traveltime=catchment_area_request.travel_cost.max_traveltime,
                         centroid_x=h3_centroid_x,
                         centroid_y=h3_centroid_y,
                     )
