@@ -723,3 +723,61 @@ def compute_isochrone(
         network = None
 
     return grid_data, network
+
+
+def compute_isochrone_h3(
+    edge_network_input,
+    start_vertices,
+    travel_time,
+    speed,
+    centroid_x,
+    centroid_y,
+    zoom: int = 10,
+    use_distance: bool = False,
+):
+    """
+    Compute isochrone for a given start vertices
+
+    :param edge_network: Edge Network DataFrame
+    :param start_vertices: List of start vertices
+    :param travel_time: Travel time in minutes
+    :return: R5 Grid
+    """
+    (
+        edges_source,
+        edges_target,
+        edges_cost,
+        edges_reverse_cost,
+        edges_length,
+        unordered_map,
+        node_coords,
+        extent,
+        geom_address,
+        geom_array,
+    ) = prepare_network_isochrone(edge_network_input=edge_network_input)
+
+    # run dijkstra
+    adj_list = construct_adjacency_list_(
+        len(unordered_map), edges_source, edges_target, edges_cost, edges_reverse_cost
+    )
+    start_vertices_ids = np.array([unordered_map[v] for v in start_vertices])
+    distances = dijkstra(start_vertices_ids, adj_list, travel_time, use_distance)
+
+    # convert results to grid
+    grid_data = network_to_grid_h3(
+        extent,
+        zoom,
+        edges_source,
+        edges_target,
+        edges_length,
+        geom_address,
+        geom_array,
+        distances,
+        node_coords,
+        speed,
+        travel_time,
+        centroid_x,
+        centroid_y,
+    )
+
+    return grid_data

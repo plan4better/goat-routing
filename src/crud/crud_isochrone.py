@@ -1,15 +1,17 @@
+import math
 import os
 import time
 import uuid
 from typing import Any
 
+import numpy as np
 import polars as pl
 from redis import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 from tqdm import tqdm
 
 from src.core.config import settings
-from src.core.isochrone import compute_isochrone
+from src.core.isochrone import compute_isochrone, compute_isochrone_h3
 from src.core.jsoline import generate_jsolines
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.schemas.isochrone import (
@@ -374,8 +376,47 @@ class CRUDIsochrone:
         else:
             return None
 
+    async def get_h3_10_grid(
+        self, db_connection, obj_in: IIsochroneActiveMobility, origin_h3_10: str
+    ):
+        """Get H3_10 cell grid required for computing a grid-type isochrone."""
+
+        # Compute buffer distance for identifying relevant H3_10 cells
+        if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
+            buffer_dist = obj_in.travel_cost.max_traveltime * (
+                (obj_in.travel_cost.speed * 1000) / 60
+            )
+        else:
+            buffer_dist = obj_in.travel_cost.max_distance
+
+        # Fetch H3_10 cell grid relevant to the isochrone calculation
+        sql_get_relevant_cells = f"""
+            WITH cells AS (
+                SELECT DISTINCT(h3_grid_disk(sub.origin_h3_index, radius.value)) AS h3_index
+                FROM (SELECT UNNEST(ARRAY{origin_h3_10}::h3index[]) AS origin_h3_index) sub,
+                LATERAL (SELECT ({buffer_dist}::int / (h3_get_hexagon_edge_length_avg(10, 'm') * 1.5)::int) AS value) AS radius
+            )
+            SELECT h3_index, ST_X(centroid), ST_Y(centroid)
+            FROM cells,
+            LATERAL (
+                SELECT ST_Transform(ST_SetSRID(point::geometry, 4326), 3857) AS centroid
+                FROM h3_cell_to_lat_lng(h3_index) AS point
+            ) sub;
+        """
+        result = (await db_connection.execute(sql_get_relevant_cells)).fetchall()
+
+        h3_index = []
+        x_centroids = np.empty(len(result))
+        y_centroids = np.empty(len(result))
+        for i in range(len(result)):
+            h3_index.append(result[i][0])
+            x_centroids[i] = result[i][1]
+            y_centroids[i] = result[i][2]
+
+        return h3_index, x_centroids, y_centroids
+
     async def save_result(
-        self, obj_in: IIsochroneActiveMobility, shapes, network, grid
+        self, obj_in: IIsochroneActiveMobility, shapes, network, grid_index, grid
     ):
         """Save the result of the isochrone computation to the database."""
 
@@ -448,7 +489,31 @@ class CRUDIsochrone:
                     insert_string = ""
         else:
             # Save isochrone grid data
-            pass
+            batch_size = 1000
+            insert_string = ""
+            for i in range(0, len(grid_index)):
+                if math.isnan(grid[i]):
+                    continue
+                insert_string += f"""(
+                    '{obj_in.layer_id}',
+                    '{grid_index[i]}',
+                    {grid[i]}
+                ),"""
+                if i % batch_size == 0 or i == (len(grid_index) - 1):
+                    insert_string = f"""
+                        INSERT INTO {obj_in.result_table} (layer_id, text_attr1, integer_attr1)
+                        VALUES {insert_string.rstrip(",")};
+                    """
+                    await self.db_connection.execute(insert_string)
+                    await self.db_connection.commit()
+                    insert_string = ""
+            sql_update_geom = f"""
+                UPDATE {obj_in.result_table}
+                SET geom = ST_SetSRID(h3_cell_to_boundary(text_attr1::h3index)::geometry, 4326)
+                WHERE layer_id = '{obj_in.layer_id}';
+            """
+            await self.db_connection.execute(sql_update_geom)
+            await self.db_connection.commit()
 
     async def run(
         self,
@@ -474,11 +539,13 @@ class CRUDIsochrone:
             input_table, num_points = await self.create_input_table(obj_in)
 
             # Read & process routing network to extract relevant sub-network
-            sub_routing_network, origin_connector_ids, _, _ = await self.read_network(
-                routing_network,
-                obj_in,
-                input_table,
-                num_points,
+            sub_routing_network, origin_connector_ids, origin_point_h3_10, _ = (
+                await self.read_network(
+                    routing_network,
+                    obj_in,
+                    input_table,
+                    num_points,
+                )
             )
 
             # Delete input table for isochrone origin points
@@ -504,20 +571,50 @@ class CRUDIsochrone:
                 type(obj_in.travel_cost) == TravelTimeCostActiveMobility
             )
 
-            isochrone_grid, isochrone_network = compute_isochrone(
-                edge_network_input=sub_routing_network,
-                start_vertices=origin_connector_ids,
-                travel_time=(
-                    obj_in.travel_cost.max_traveltime
-                    if is_travel_time_isochrone
-                    else obj_in.travel_cost.max_distance
-                ),
-                speed=(
-                    obj_in.travel_cost.speed / 3.6 if is_travel_time_isochrone else None
-                ),
-                zoom=12,
-                use_distance=(not is_travel_time_isochrone),
-            )
+            isochrone_grid_index = None
+            if obj_in.isochrone_type != "rectangular_grid":
+                isochrone_grid, isochrone_network = compute_isochrone(
+                    edge_network_input=sub_routing_network,
+                    start_vertices=origin_connector_ids,
+                    travel_time=(
+                        obj_in.travel_cost.max_traveltime
+                        if is_travel_time_isochrone
+                        else obj_in.travel_cost.max_distance
+                    ),
+                    speed=(
+                        obj_in.travel_cost.speed / 3.6
+                        if is_travel_time_isochrone
+                        else None
+                    ),
+                    zoom=12,
+                    use_distance=(not is_travel_time_isochrone),
+                )
+            else:
+                isochrone_grid_index, h3_centroid_x, h3_centroid_y = (
+                    await self.get_h3_10_grid(
+                        self.db_connection,
+                        obj_in=obj_in,
+                        origin_h3_10=origin_point_h3_10,
+                    )
+                )
+                isochrone_grid = compute_isochrone_h3(
+                    edge_network_input=sub_routing_network,
+                    start_vertices=origin_connector_ids,
+                    travel_time=(
+                        obj_in.travel_cost.max_traveltime
+                        if is_travel_time_isochrone
+                        else obj_in.travel_cost.max_distance
+                    ),
+                    speed=(
+                        obj_in.travel_cost.speed / 3.6
+                        if is_travel_time_isochrone
+                        else None
+                    ),
+                    centroid_x=h3_centroid_x,
+                    centroid_y=h3_centroid_y,
+                    zoom=12,
+                    use_distance=(not is_travel_time_isochrone),
+                )
             print("Computed isochrone grid & network.")
 
             if obj_in.isochrone_type == "polygon":
@@ -542,7 +639,11 @@ class CRUDIsochrone:
         start_time = time.time()
         try:
             await self.save_result(
-                obj_in, isochrone_shapes, isochrone_network, isochrone_grid
+                obj_in,
+                isochrone_shapes,
+                isochrone_network,
+                isochrone_grid_index,
+                isochrone_grid,
             )
         except Exception as e:
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
