@@ -1,5 +1,5 @@
-DROP TYPE IF EXISTS temporal.origin_segment;
-CREATE TYPE temporal.origin_segment AS (
+DROP TYPE IF EXISTS origin_segment;
+CREATE TYPE origin_segment AS (
     id int, class_ text, impedance_slope float8, impedance_slope_reverse float8,
     impedance_surface float8, source int, target int, tags text,
     geom geometry, h3_3 int2, h3_6 int4, fraction float[], fraction_geom geometry[],
@@ -7,31 +7,37 @@ CREATE TYPE temporal.origin_segment AS (
 );
 
 
-DROP TYPE IF EXISTS temporal.artificial_segment CASCADE;
-CREATE TYPE temporal.artificial_segment AS (
-    point_id int2, point_geom geometry, old_id int, id int, length_m float,
-    length_3857 float, class_ text, impedance_slope float8, impedance_slope_reverse float8,
-    impedance_surface float8, coordinates_3857 jsonb,
+DROP TYPE IF EXISTS artificial_segment CASCADE;
+CREATE TYPE artificial_segment AS (
+    point_id int2, point_geom geometry, point_h3_10 h3index, point_h3_3 int, old_id int,
+    id int, length_m float, length_3857 float, class_ text, impedance_slope float8,
+    impedance_slope_reverse float8, impedance_surface float8, coordinates_3857 jsonb,
     source int, target int, geom geometry, tags text, h3_3 int2, h3_6 int4
 );
 
 
-DROP FUNCTION IF EXISTS temporal.get_artificial_segments;
-CREATE OR REPLACE FUNCTION temporal.get_artificial_segments(
+DROP FUNCTION IF EXISTS get_artificial_segments;
+CREATE OR REPLACE FUNCTION get_artificial_segments(
     input_table text,
     num_points integer,
     classes text
 )
-RETURNS SETOF temporal.artificial_segment
+RETURNS SETOF artificial_segment
 LANGUAGE plpgsql
 AS $function$
 DECLARE
     custom_cursor REFCURSOR;
-	origin_segment temporal.origin_segment;
-	artificial_segment temporal.artificial_segment;
+	origin_segment origin_segment;
+	artificial_segment artificial_segment;
 
+    -- Increment everytime a new artificial segment is created
     artificial_seg_index int = 1000000000; -- Defaults to 1 billion
+
+    -- Increment everytime a new artificial connector/node is created
     artificial_con_index int = 1000000000; -- Defaults to 1 billion
+
+    -- Increment everytime a new artificial origin node is created (for isochrone starting points)
+    artifical_origin_index int = 2000000000; -- Defaults to 2 billion
 
     fraction float;
     new_geom geometry;
@@ -91,41 +97,37 @@ BEGIN
         artificial_segment.h3_3 = origin_segment.h3_3;
         artificial_segment.h3_6 = origin_segment.h3_6;
 
-        -- Generate the first artifical segment for this origin segment
-        artificial_segment.point_id = NULL;
-        artificial_segment.point_geom = NULL;
-        artificial_segment.id = artificial_seg_index;
-        new_geom = ST_LineSubstring(origin_segment.geom, 0, origin_segment.fraction[1]);
-        artificial_segment.length_m = ST_Length(new_geom::geography);
-        artificial_segment.length_3857 = ST_Length(ST_Transform(new_geom, 3857));
-        artificial_segment.coordinates_3857 = (ST_AsGeoJSON(ST_Transform(new_geom, 3857))::jsonb)->'coordinates';
-        artificial_segment.source = origin_segment.source;
-        artificial_segment.target = artificial_con_index;
-        artificial_segment.geom = new_geom;
-        RETURN NEXT artificial_segment;
-        artificial_seg_index = artificial_seg_index + 1;
-        artificial_con_index = artificial_con_index + 1;
+        IF origin_segment.fraction[1] != 0 THEN
+            -- Generate the first artifical segment for this origin segment
+            artificial_segment.point_id = NULL;
+            artificial_segment.point_geom = NULL;
+            artificial_segment.point_h3_10 = NULL;
+            artificial_segment.point_h3_3 = NULL;
+            artificial_segment.id = artificial_seg_index;
+            new_geom = ST_LineSubstring(origin_segment.geom, 0, origin_segment.fraction[1]);
+            artificial_segment.length_m = ST_Length(new_geom::geography);
+            artificial_segment.length_3857 = ST_Length(ST_Transform(new_geom, 3857));
+            artificial_segment.coordinates_3857 = (ST_AsGeoJSON(ST_Transform(new_geom, 3857))::jsonb)->'coordinates';
+            artificial_segment.source = origin_segment.source;
+            IF origin_segment.fraction[1] = 1 THEN
+                artificial_segment.target = origin_segment.target;
+            ELSE
+                artificial_segment.target = artificial_con_index;
+                artificial_con_index = artificial_con_index + 1;
+            END IF;
+            artificial_segment.geom = new_geom;
+            RETURN NEXT artificial_segment;
+            artificial_seg_index = artificial_seg_index + 1;
+        END IF;
 
         -- Iterate over fractions if the origin segment is the origin for multiple isochrone starting points
         IF array_length(origin_segment.fraction, 1) > 1 THEN
             FOR i IN 2..array_length(origin_segment.fraction, 1) LOOP
-                artificial_segment.point_id = NULL;
-                artificial_segment.point_geom = NULL;
-                artificial_segment.id = artificial_seg_index;
-                new_geom = ST_LineSubstring(origin_segment.geom, origin_segment.fraction[i - 1], origin_segment.fraction[i]);
-                artificial_segment.length_m = ST_Length(new_geom::geography);
-                artificial_segment.length_3857 = ST_Length(ST_Transform(new_geom, 3857));
-                artificial_segment.coordinates_3857 = (ST_AsGeoJSON(ST_Transform(new_geom, 3857))::jsonb)->'coordinates';
-                artificial_segment.source = artificial_con_index - 1;
-                artificial_segment.target = artificial_con_index;
-                artificial_segment.geom = new_geom;
-                RETURN NEXT artificial_segment;
-                artificial_seg_index = artificial_seg_index + 1;
-                artificial_con_index = artificial_con_index + 1;
-
                 -- Generate an artificial segment connecting the origin point to the new artificial segment
                 artificial_segment.point_id = origin_segment.point_id[i - 1];
                 artificial_segment.point_geom = origin_segment.point_geom[i - 1];
+                artificial_segment.point_h3_10 = h3_lat_lng_to_cell(artificial_segment.point_geom::point, 10);
+                artificial_segment.point_h3_3 = to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
                 artificial_segment.id = artificial_seg_index;
                 new_geom = ST_SetSRID(ST_MakeLine(
                     origin_segment.point_geom[i - 1],
@@ -134,36 +136,52 @@ BEGIN
                 artificial_segment.length_m = ST_Length(new_geom::geography);
                 artificial_segment.length_3857 = ST_Length(ST_Transform(new_geom, 3857));
                 artificial_segment.coordinates_3857 = (ST_AsGeoJSON(ST_Transform(new_geom, 3857))::jsonb)->'coordinates';
-                artificial_segment.source = artificial_con_index;
-                artificial_segment.target = artificial_con_index - 2;
+                artificial_segment.source = artifical_origin_index;
+                artifical_origin_index = artifical_origin_index + 1;
+                IF origin_segment.fraction[i - 1] = 0 THEN
+                    artificial_segment.target = origin_segment.source;
+                ELSIF origin_segment.fraction[i] = 1 THEN
+                    artificial_segment.target = origin_segment.target;
+                ELSE
+                    artificial_segment.target = artificial_con_index - 1;
+                END IF;
                 artificial_segment.geom = new_geom;
                 RETURN NEXT artificial_segment;
                 artificial_seg_index = artificial_seg_index + 1;
-                artificial_con_index = artificial_con_index + 1;
+
+                IF origin_segment.fraction[i] != origin_segment.fraction[i - 1] THEN
+                    artificial_segment.point_id = NULL;
+                    artificial_segment.point_geom = NULL;
+                    artificial_segment.point_h3_10 = NULL;
+                    artificial_segment.point_h3_3 = NULL;
+                    artificial_segment.id = artificial_seg_index;
+                    new_geom = ST_LineSubstring(origin_segment.geom, origin_segment.fraction[i - 1], origin_segment.fraction[i]);
+                    artificial_segment.length_m = ST_Length(new_geom::geography);
+                    artificial_segment.length_3857 = ST_Length(ST_Transform(new_geom, 3857));
+                    artificial_segment.coordinates_3857 = (ST_AsGeoJSON(ST_Transform(new_geom, 3857))::jsonb)->'coordinates';
+                    IF origin_segment.fraction[i - 1] = 0 THEN
+                        artificial_segment.source = origin_segment.source;
+                    ELSE
+                        artificial_segment.source = artificial_con_index - 1;
+                    END IF;
+                    IF origin_segment.fraction[i] = 1 THEN
+                        artificial_segment.target = origin_segment.target;
+                    ELSE
+                        artificial_segment.target = artificial_con_index;
+                        artificial_con_index = artificial_con_index + 1;
+                    END IF;
+                    artificial_segment.geom = new_geom;
+                    RETURN NEXT artificial_segment;
+                    artificial_seg_index = artificial_seg_index + 1;
+                END IF;
             END LOOP;
         END IF;
-
-        -- Generate the last artificial segment for this origin segment
-        artificial_segment.point_id = NULL;
-        artificial_segment.point_geom = NULL;
-        artificial_segment.id = artificial_seg_index;
-        new_geom = ST_LineSubstring(origin_segment.geom, origin_segment.fraction[array_length(origin_segment.fraction, 1)], 1);
-        artificial_segment.length_m = ST_Length(new_geom::geography);
-        artificial_segment.length_3857 = ST_Length(ST_Transform(new_geom, 3857));
-        artificial_segment.coordinates_3857 = (ST_AsGeoJSON(ST_Transform(new_geom, 3857))::jsonb)->'coordinates';
-        IF array_length(origin_segment.fraction, 1) > 1 THEN
-            artificial_segment.source = artificial_con_index - 2;
-        ELSE
-            artificial_segment.source = artificial_con_index - 1;
-        END IF;
-        artificial_segment.target = origin_segment.target;
-        artificial_segment.geom = new_geom;
-        RETURN NEXT artificial_segment;
-        artificial_seg_index = artificial_seg_index + 1;
 
         -- Generate an artificial segment connecting the origin point to the new artificial segment
         artificial_segment.point_id = origin_segment.point_id[array_length(origin_segment.point_id, 1)];
         artificial_segment.point_geom = origin_segment.point_geom[array_length(origin_segment.point_geom, 1)];
+        artificial_segment.point_h3_10 = h3_lat_lng_to_cell(artificial_segment.point_geom::point, 10);
+        artificial_segment.point_h3_3 = to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
         artificial_segment.id = artificial_seg_index;
         new_geom = ST_SetSRID(ST_MakeLine(
             origin_segment.point_geom[array_length(origin_segment.point_geom, 1)],
@@ -172,16 +190,40 @@ BEGIN
         artificial_segment.length_m = ST_Length(new_geom::geography);
         artificial_segment.length_3857 = ST_Length(ST_Transform(new_geom, 3857));
         artificial_segment.coordinates_3857 = (ST_AsGeoJSON(ST_Transform(new_geom, 3857))::jsonb)->'coordinates';
-        artificial_segment.source = artificial_con_index;
-        IF array_length(origin_segment.fraction, 1) > 1 THEN
-            artificial_segment.target = artificial_con_index - 2;
+        artificial_segment.source = artifical_origin_index;
+        artifical_origin_index = artifical_origin_index + 1;
+        IF origin_segment.fraction[array_length(origin_segment.fraction, 1)] = 0 THEN
+            artificial_segment.target = origin_segment.source;
+        ELSIF origin_segment.fraction[array_length(origin_segment.fraction, 1)] = 1 THEN
+            artificial_segment.target = origin_segment.target;
         ELSE
             artificial_segment.target = artificial_con_index - 1;
         END IF;
         artificial_segment.geom = new_geom;
         RETURN NEXT artificial_segment;
         artificial_seg_index = artificial_seg_index + 1;
-        artificial_con_index = artificial_con_index + 1;
+
+        IF origin_segment.fraction[array_length(origin_segment.fraction, 1)] != 1 THEN
+            -- Generate the last artificial segment for this origin segment
+            artificial_segment.point_id = NULL;
+            artificial_segment.point_geom = NULL;
+            artificial_segment.point_h3_10 = NULL;
+            artificial_segment.point_h3_3 = NULL;
+            artificial_segment.id = artificial_seg_index;
+            new_geom = ST_LineSubstring(origin_segment.geom, origin_segment.fraction[array_length(origin_segment.fraction, 1)], 1);
+            artificial_segment.length_m = ST_Length(new_geom::geography);
+            artificial_segment.length_3857 = ST_Length(ST_Transform(new_geom, 3857));
+            artificial_segment.coordinates_3857 = (ST_AsGeoJSON(ST_Transform(new_geom, 3857))::jsonb)->'coordinates';
+            IF origin_segment.fraction[array_length(origin_segment.fraction, 1)] = 0 THEN
+                artificial_segment.source = origin_segment.source;
+            ELSE
+                artificial_segment.source = artificial_con_index - 1;
+            END IF;
+            artificial_segment.target = origin_segment.target;
+            artificial_segment.geom = new_geom;
+            RETURN NEXT artificial_segment;
+            artificial_seg_index = artificial_seg_index + 1;
+        END IF;
 	
 	END LOOP;
 	

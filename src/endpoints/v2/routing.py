@@ -5,9 +5,11 @@ from fastapi.responses import JSONResponse
 from redis import Redis
 
 from src.core.config import settings
-from src.core.worker import run_isochrone
-from src.schemas.isochrone import IIsochroneActiveMobility
-from src.schemas.isochrone import request_examples as active_mobility_request_examples
+from src.core.worker import run_catchment_area
+from src.schemas.catchment_area import ICatchmentAreaActiveMobility
+from src.schemas.catchment_area import (
+    request_examples as active_mobility_request_examples,
+)
 from src.schemas.status import ProcessingStatus
 
 router = APIRouter()
@@ -19,55 +21,55 @@ redis = Redis(
 
 
 @router.post(
-    "/isochrone",
-    summary="Compute isochrones for active mobility",
+    "/catchment-area",
+    summary="Compute catchment areas for active mobility",
 )
-async def compute_active_mobility_isochrone(
+async def compute_active_mobility_catchment_area(
     *,
-    params: IIsochroneActiveMobility = Body(
+    params: ICatchmentAreaActiveMobility = Body(
         ...,
-        examples=active_mobility_request_examples["isochrone_active_mobility"],
-        description="The isochrone parameters.",
+        examples=active_mobility_request_examples["catchment_area_active_mobility"],
+        description="The catchment area parameters.",
     ),
 ):
-    """Compute isochrones for active mobility."""
+    """Compute catchment areas for active mobility."""
 
-    # Get processing status of isochrone request
+    # Get processing status of catchment area request
     processing_status = redis.get(str(params.layer_id))
     processing_status = processing_status.decode("utf-8") if processing_status else None
 
     if processing_status is None:
-        # Initiate isochrone computation for request
+        # Initiate catchment area computation for request
         redis.set(str(params.layer_id), ProcessingStatus.in_progress.value)
         params = json.loads(params.json()).copy()
-        run_isochrone.delay(params)
+        run_catchment_area.delay(params)
         return JSONResponse(
             content={
                 "result": ProcessingStatus.in_progress.value,
-                "message": "Isochrone computation in progress.",
+                "message": "Catchment area computation in progress.",
             },
             status_code=202,
         )
     elif processing_status == ProcessingStatus.in_progress.value:
-        # Isochrone computation is in progress
+        # Catchment area computation is in progress
         return JSONResponse(
             content={
                 "result": processing_status,
-                "message": "Isochrone computation in progress.",
+                "message": "Catchment area computation in progress.",
             },
             status_code=202,
         )
     elif processing_status == ProcessingStatus.success.value:
-        # Isochrone computation was successful
+        # Catchment area computation was successful
         return JSONResponse(
             content={
                 "result": processing_status,
-                "message": "Isochrone computed successfully.",
+                "message": "Catchment area computed successfully.",
             },
             status_code=201,
         )
     elif processing_status == ProcessingStatus.disconnected_origin.value:
-        # Isochrone computation failed
+        # Catchment area computation failed
         return JSONResponse(
             content={
                 "result": processing_status,
@@ -76,11 +78,11 @@ async def compute_active_mobility_isochrone(
             status_code=400,
         )
     else:
-        # Isochrone computation failed
+        # Catchment area computation failed
         return JSONResponse(
             content={
                 "result": processing_status,
-                "message": "Failed to compute isochrone.",
+                "message": "Failed to compute catchment area.",
             },
             status_code=500,
         )

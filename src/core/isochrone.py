@@ -91,6 +91,53 @@ def dijkstra(start_vertices, adj_list, travel_time, use_distance=False):
 
 
 @njit(cache=True)
+def dijkstra_h3(start_vertices, adj_list, travel_time, use_distance=False):
+    """
+    Dijkstra's algorithm one-to-all shortest path search
+    :param start_vertices: List of start vertices
+    :param adj_list: Adjacency list
+    :param travel_time: Travel time matrix
+    :return: List of shortest paths and costs
+    """
+    distances_list = []
+    n = len(adj_list)
+    # distances = [np.Inf for _ in range(n)]
+
+    # loop over all start vertices
+    for start_vertex in start_vertices:
+        distances = np.full(n, np.Inf, np.double)
+        distances[start_vertex] = 0.0
+        # visited = [False for _ in range(n)]
+        visited = np.full(n, False, np.bool8)
+        # set up priority queue
+        pq = [(0.0, start_vertex)]
+        while len(pq) > 0:
+            if pq[0][0] >= travel_time:
+                break
+            # get the root, discard current distance (!!!distances in the data are in seconds)
+            _, u = heapq.heappop(pq)
+            # if the node is visited, skip
+            if visited[u]:
+                continue
+            # set the node to visited
+            visited[u] = True
+            # check the distance and node and distance
+            for v, l in adj_list[u]:
+                v = int(v)
+                l = (
+                    (l / 60.0) if not use_distance else l
+                )  # convert cost to minutes if required
+                # if the current node's distance + distance to the node we're visiting
+                # is less than the distance of the node we're visiting on file
+                # replace that distance and push the node we're visiting into the priority queue
+                if distances[u] + l < distances[v]:
+                    distances[v] = distances[u] + l
+                    heapq.heappush(pq, (distances[v], v))
+        distances_list.append(distances)
+    return distances_list
+
+
+@njit(cache=True)
 def array_equals(vertex, array):
     pointer = 0
     found = np.empty(100, np.int64)
@@ -185,7 +232,7 @@ def remap_edges(edge_source, edge_target, geom_address, geom_array):
         key_type=types.int64,
         value_type=types.int64,
     )
-    node_coords = np.empty((len(edge_source), 2), np.double)
+    node_coords = np.empty((int((len(edge_source) * 1.5)), 2), np.double)
     id = 0
     for i in range(len(edge_source)):
         edge_geom = geom_array[geom_address[i] : geom_address[i + 1], :]
@@ -375,6 +422,46 @@ def build_grid_interpolate_(
     return np.flip(Z, 0)
 
 
+def build_grid_interpolate_h3(
+    points, costs, centroid_x, centroid_y, speed, max_traveltime
+):
+    """
+    Build grid interpolate
+    :param points: List of points
+    :param costs: List of costs
+    :param centroid_x: X coordinate of H3 cell centroids
+    :param centroid_y: Y coordinate of H3 cell centroids
+    :return: Grid interpolate (mapped cost for each centroid)
+    """
+
+    # Combine centroid x and y coordinates into a grid
+    grid_points = np.stack((centroid_x, centroid_y), axis=1)
+
+    # Use K-nearest-neighbors function to find the nearest node to each centroid
+    tree = spatial.KDTree(points)
+    distances, indices = tree.query(
+        grid_points, k=1, distance_upper_bound=200, workers=1
+    )
+
+    # Map cost of nearest node to each centroid
+    mapped_costs = np.take(costs, indices, mode="clip")
+
+    # Discard cost of centroids which are too far from any node
+    invalid_indices = np.asarray(indices == len(costs)).nonzero()[0]
+    np.put(mapped_costs, invalid_indices, np.NaN)
+
+    # Account for additional cost of travel from node to centroid
+    distances[distances == np.inf] = np.NaN
+    additional_costs = 0 if speed is None else ((distances / speed) / 60)
+    mapped_costs = np.rint(mapped_costs + additional_costs)
+
+    # Discard cost of centroids which are further than the max travel time
+    invalid_costs = np.asarray(mapped_costs > max_traveltime).nonzero()[0]
+    np.put(mapped_costs, invalid_costs, np.NaN)
+
+    return mapped_costs
+
+
 def prepare_network_isochrone(edge_network_input):
     edge_network = edge_network_input.copy()
     # remap edges
@@ -492,6 +579,74 @@ def network_to_grid(
     return grid_data
 
 
+def network_to_grid_h3(
+    extent,
+    zoom,
+    edges_source,
+    edges_target,
+    edges_length,
+    geom_address,
+    geom_array,
+    distances,
+    node_coords,
+    speed,
+    max_traveltime,
+    centroid_x,
+    centroid_y,
+):
+    # Pixel coordinates origin is at the top left corner of the image. (y of top right/left corner is smaller than y of bottom right/left corner)
+    xy_bottom_left = [
+        math.floor(x)
+        for x in coordinate_to_pixel(
+            [extent[0], extent[1]], zoom=zoom, return_dict=False, web_mercator=True
+        )
+    ]
+    xy_top_right = [
+        math.floor(x)
+        for x in coordinate_to_pixel(
+            [extent[2], extent[3]], zoom=zoom, return_dict=False, web_mercator=True
+        )
+    ]
+    # pixel x, y distances
+    width_pixel = xy_top_right[0] - xy_bottom_left[0]
+
+    # split edges based on resolution
+    interpolated_coords = []
+    interpolated_costs = []
+    interpolated_coords, interpolated_costs = split_edges(
+        edges_source,
+        edges_target,
+        edges_length,
+        geom_address,
+        geom_array,
+        distances,
+        150.0,
+    )
+
+    node_coords_list = np.concatenate((node_coords, interpolated_coords))
+    node_costs_list = np.concatenate((distances, interpolated_costs))
+
+    node_coords_list, node_costs_list = filter_nodes(
+        node_coords_list,
+        node_costs_list,
+        zoom,
+        width_pixel,
+        xy_bottom_left[0],
+        xy_top_right[1],
+    )
+
+    mapped_cost = build_grid_interpolate_h3(
+        node_coords_list,
+        node_costs_list,
+        centroid_x,
+        centroid_y,
+        speed,
+        max_traveltime,
+    )
+
+    return mapped_cost
+
+
 def compute_isochrone(
     edge_network_input,
     start_vertices,
@@ -568,3 +723,61 @@ def compute_isochrone(
         network = None
 
     return grid_data, network
+
+
+def compute_isochrone_h3(
+    edge_network_input,
+    start_vertices,
+    travel_time,
+    speed,
+    centroid_x,
+    centroid_y,
+    zoom: int = 10,
+    use_distance: bool = False,
+):
+    """
+    Compute isochrone for a given start vertices
+
+    :param edge_network: Edge Network DataFrame
+    :param start_vertices: List of start vertices
+    :param travel_time: Travel time in minutes
+    :return: R5 Grid
+    """
+    (
+        edges_source,
+        edges_target,
+        edges_cost,
+        edges_reverse_cost,
+        edges_length,
+        unordered_map,
+        node_coords,
+        extent,
+        geom_address,
+        geom_array,
+    ) = prepare_network_isochrone(edge_network_input=edge_network_input)
+
+    # run dijkstra
+    adj_list = construct_adjacency_list_(
+        len(unordered_map), edges_source, edges_target, edges_cost, edges_reverse_cost
+    )
+    start_vertices_ids = np.array([unordered_map[v] for v in start_vertices])
+    distances = dijkstra(start_vertices_ids, adj_list, travel_time, use_distance)
+
+    # convert results to grid
+    grid_data = network_to_grid_h3(
+        extent,
+        zoom,
+        edges_source,
+        edges_target,
+        edges_length,
+        geom_address,
+        geom_array,
+        distances,
+        node_coords,
+        speed,
+        travel_time,
+        centroid_x,
+        centroid_y,
+    )
+
+    return grid_data

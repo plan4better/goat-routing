@@ -50,6 +50,14 @@
             "env": {
                 "PYTEST_ADDOPTS": "--no-cov"
             }
-        }
+        },
+        {
+            "name": "Python: Heatmap Matrix Preparation",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/preparation/heatmap_matrix.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
     ]
 }
