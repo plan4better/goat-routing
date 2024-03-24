@@ -32,7 +32,7 @@ class FetchRoutingNetwork:
         try:
             sql_get_h3_3_grid = f"""
                 WITH region AS (
-                    SELECT geom from {settings.NETWORK_REGION_TABLE}
+                    SELECT ST_Union(geom) AS geom from {settings.NETWORK_REGION_TABLE}
                 )
                 SELECT g.h3_short FROM region r,
                 LATERAL temporal.fill_polygon_h3_3(r.geom) g;
@@ -40,8 +40,7 @@ class FetchRoutingNetwork:
             self.db_cursor.execute(sql_get_h3_3_grid)
             result = self.db_cursor.fetchall()
             for h3_index in result:
-                if h3_index[0]:
-                    h3_3_grid.append(h3_index[0])
+                h3_3_grid.append(h3_index[0])
         except Exception as e:
             print(e)
             # TODO Throw appropriate exception
