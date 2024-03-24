@@ -14,3 +14,9 @@ ROUTING_COST_CONFIG = {
         max_traveltime=30, steps=30, speed=23
     ),
 }
+
+MATRIX_RESOLUTION_CONFIG = {
+    RoutingActiveMobilityType.walking.value: 10,
+    RoutingActiveMobilityType.bicycle.value: 9,
+    RoutingActiveMobilityType.pedelec.value: 9,
+}

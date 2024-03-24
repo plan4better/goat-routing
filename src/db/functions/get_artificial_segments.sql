@@ -1,5 +1,5 @@
-DROP TYPE IF EXISTS origin_segment;
-CREATE TYPE origin_segment AS (
+DROP TYPE IF EXISTS basic.origin_segment;
+CREATE TYPE basic.origin_segment AS (
     id int, class_ text, impedance_slope float8, impedance_slope_reverse float8,
     impedance_surface float8, source int, target int, tags text,
     geom geometry, h3_3 int2, h3_6 int4, fraction float[], fraction_geom geometry[],
@@ -7,28 +7,29 @@ CREATE TYPE origin_segment AS (
 );
 
 
-DROP TYPE IF EXISTS artificial_segment CASCADE;
-CREATE TYPE artificial_segment AS (
-    point_id int2, point_geom geometry, point_h3_10 h3index, point_h3_3 int, old_id int,
+DROP TYPE IF EXISTS basic.artificial_segment CASCADE;
+CREATE TYPE basic.artificial_segment AS (
+    point_id int2, point_geom geometry, point_cell_index h3index, point_h3_3 int, old_id int,
     id int, length_m float, length_3857 float, class_ text, impedance_slope float8,
     impedance_slope_reverse float8, impedance_surface float8, coordinates_3857 jsonb,
     source int, target int, geom geometry, tags text, h3_3 int2, h3_6 int4
 );
 
 
-DROP FUNCTION IF EXISTS get_artificial_segments;
-CREATE OR REPLACE FUNCTION get_artificial_segments(
+DROP FUNCTION IF EXISTS basic.get_artificial_segments;
+CREATE OR REPLACE FUNCTION basic.get_artificial_segments(
     input_table text,
     num_points integer,
-    classes text
+    classes text,
+    point_cell_resolution int
 )
-RETURNS SETOF artificial_segment
+RETURNS SETOF basic.artificial_segment
 LANGUAGE plpgsql
 AS $function$
 DECLARE
     custom_cursor REFCURSOR;
-	origin_segment origin_segment;
-	artificial_segment artificial_segment;
+	origin_segment basic.origin_segment;
+	artificial_segment basic.artificial_segment;
 
     -- Increment everytime a new artificial segment is created
     artificial_seg_index int = 1000000000; -- Defaults to 1 billion
@@ -101,7 +102,7 @@ BEGIN
             -- Generate the first artifical segment for this origin segment
             artificial_segment.point_id = NULL;
             artificial_segment.point_geom = NULL;
-            artificial_segment.point_h3_10 = NULL;
+            artificial_segment.point_cell_index = NULL;
             artificial_segment.point_h3_3 = NULL;
             artificial_segment.id = artificial_seg_index;
             new_geom = ST_LineSubstring(origin_segment.geom, 0, origin_segment.fraction[1]);
@@ -126,7 +127,7 @@ BEGIN
                 -- Generate an artificial segment connecting the origin point to the new artificial segment
                 artificial_segment.point_id = origin_segment.point_id[i - 1];
                 artificial_segment.point_geom = origin_segment.point_geom[i - 1];
-                artificial_segment.point_h3_10 = h3_lat_lng_to_cell(artificial_segment.point_geom::point, 10);
+                artificial_segment.point_cell_index = h3_lat_lng_to_cell(artificial_segment.point_geom::point, point_cell_resolution);
                 artificial_segment.point_h3_3 = to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
                 artificial_segment.id = artificial_seg_index;
                 new_geom = ST_SetSRID(ST_MakeLine(
@@ -152,7 +153,7 @@ BEGIN
                 IF origin_segment.fraction[i] != origin_segment.fraction[i - 1] THEN
                     artificial_segment.point_id = NULL;
                     artificial_segment.point_geom = NULL;
-                    artificial_segment.point_h3_10 = NULL;
+                    artificial_segment.point_cell_index = NULL;
                     artificial_segment.point_h3_3 = NULL;
                     artificial_segment.id = artificial_seg_index;
                     new_geom = ST_LineSubstring(origin_segment.geom, origin_segment.fraction[i - 1], origin_segment.fraction[i]);
@@ -180,7 +181,7 @@ BEGIN
         -- Generate an artificial segment connecting the origin point to the new artificial segment
         artificial_segment.point_id = origin_segment.point_id[array_length(origin_segment.point_id, 1)];
         artificial_segment.point_geom = origin_segment.point_geom[array_length(origin_segment.point_geom, 1)];
-        artificial_segment.point_h3_10 = h3_lat_lng_to_cell(artificial_segment.point_geom::point, 10);
+        artificial_segment.point_cell_index = h3_lat_lng_to_cell(artificial_segment.point_geom::point, point_cell_resolution);
         artificial_segment.point_h3_3 = to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
         artificial_segment.id = artificial_seg_index;
         new_geom = ST_SetSRID(ST_MakeLine(
@@ -207,7 +208,7 @@ BEGIN
             -- Generate the last artificial segment for this origin segment
             artificial_segment.point_id = NULL;
             artificial_segment.point_geom = NULL;
-            artificial_segment.point_h3_10 = NULL;
+            artificial_segment.point_cell_index = NULL;
             artificial_segment.point_h3_3 = NULL;
             artificial_segment.id = artificial_seg_index;
             new_geom = ST_LineSubstring(origin_segment.geom, origin_segment.fraction[array_length(origin_segment.fraction, 1)], 1);

@@ -19,7 +19,7 @@ from src.schemas.catchment_area import (
     RoutingActiveMobilityType,
 )
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
-from src.schemas.heatmap import ROUTING_COST_CONFIG
+from src.schemas.heatmap import MATRIX_RESOLUTION_CONFIG, ROUTING_COST_CONFIG
 
 
 class HeatmapMatrixProcess:
@@ -38,6 +38,7 @@ class HeatmapMatrixProcess:
         self.buffer_distance = ROUTING_COST_CONFIG[
             routing_type.value
         ].max_traveltime * ((ROUTING_COST_CONFIG[routing_type.value].speed * 1000) / 60)
+        self.matrix_resolution = MATRIX_RESOLUTION_CONFIG[routing_type.value]
 
     def generate_multi_catchment_area_request(
         self, db_cursor, h3_6_index: str, routing_type: RoutingActiveMobilityType
@@ -47,11 +48,11 @@ class HeatmapMatrixProcess:
         origin_lat = []
         origin_lng = []
 
-        # Get the centroid coordinates for all child H3_10 cells of the supplied H3_6 parent cell
+        # Get the centroid coordinates for all child cells of the supplied H3_6 parent cell
         sql_get_centroid = f"""
             WITH centroid AS (
                 SELECT ST_SetSRID(h3_cell_to_lat_lng(h3_index)::geometry, 4326) AS geom
-                FROM h3_cell_to_children('{h3_6_index}'::h3index, 10) AS h3_index
+                FROM h3_cell_to_children('{h3_6_index}'::h3index, {self.matrix_resolution}) AS h3_index
             )
             SELECT ST_X(geom), ST_Y(geom)
             FROM centroid;
@@ -79,13 +80,13 @@ class HeatmapMatrixProcess:
             layer_id=None,
         )
 
-    def get_h3_10_grid(self, db_cursor, h3_6_index: str):
+    def get_cell_grid(self, db_cursor, h3_6_index: str):
         sql_get_relevant_cells = f"""
             WITH cells AS (
                 SELECT h3_grid_disk(origin_h3_index, radius.value) AS h3_index
-                FROM h3_cell_to_center_child('{h3_6_index}', 10) AS origin_h3_index,
+                FROM h3_cell_to_center_child('{h3_6_index}', {self.matrix_resolution}) AS origin_h3_index,
                 LATERAL (SELECT (h3_get_hexagon_edge_length_avg(6, 'm') + {self.buffer_distance})::int AS dist) AS buffer,
-                LATERAL (SELECT (buffer.dist / (h3_get_hexagon_edge_length_avg(10, 'm') * 2)::int) AS value) AS radius
+                LATERAL (SELECT (buffer.dist / (h3_get_hexagon_edge_length_avg({self.matrix_resolution}, 'm') * 1.5)::int) AS value) AS radius
             )
             SELECT h3_index, ST_X(centroid), ST_Y(centroid)
             FROM cells,
@@ -107,19 +108,25 @@ class HeatmapMatrixProcess:
 
         return h3_index, x_centroids, y_centroids
 
-    def add_to_insert_string(self, orig_h3_10, dest_h3_10, cost, orig_h3_3):
+    def add_to_insert_string(self, orig_id, dest_id, costs, orig_h3_3):
         cost_map = {}
-        for i in range(len(dest_h3_10)):
-            if math.isnan(cost[i]) or int(cost[i]) == 0:
+        for i in range(len(dest_id)):
+            if math.isnan(costs[i]) or int(costs[i]) == 0:
                 continue
-            if int(cost[i]) not in cost_map:
-                cost_map[int(cost[i])] = []
-            cost_map[int(cost[i])].append(dest_h3_10[i])
+            cost = int(costs[i])
+            if cost not in cost_map:
+                cost_map[cost] = []
+            cost_map[cost].append(dest_id[i])
+
+        if 1 not in cost_map:
+            cost_map[1] = [orig_id]
+        elif orig_id not in cost_map[1]:
+            cost_map[1].append(orig_id)
 
         for traveltime in cost_map:
             self.insert_string += f"""(
-                '{orig_h3_10}',
-                ARRAY{cost_map[traveltime]},
+                '{orig_id}'::h3index,
+                ARRAY{cost_map[traveltime]}::h3index[],
                 {traveltime},
                 {orig_h3_3}
             ),"""
@@ -135,7 +142,7 @@ class HeatmapMatrixProcess:
     def write_to_db(self, db_cursor, db_connection):
         db_cursor.execute(
             f"""
-                INSERT INTO basic.traveltime_matrix_walking_text (orig_id, dest_id, traveltime, h3_3)
+                INSERT INTO basic.traveltime_matrix_{self.routing_type.value} (orig_id, dest_id, traveltime, h3_3)
                 VALUES {self.insert_string.rstrip(",")};
             """
         )
@@ -164,7 +171,7 @@ class HeatmapMatrixProcess:
 
             sub_routing_network = None
             origin_connector_ids = None
-            origin_point_h3_10 = None
+            origin_point_cell_index = None
             origin_point_h3_3 = None
             try:
                 # Create input table for catchment area origin points
@@ -176,13 +183,14 @@ class HeatmapMatrixProcess:
                 (
                     sub_routing_network,
                     origin_connector_ids,
-                    origin_point_h3_10,
+                    origin_point_cell_index,
                     origin_point_h3_3,
                 ) = crud_catchment_area.read_network(
                     self.routing_network,
                     catchment_area_request,
                     input_table,
                     num_points,
+                    self.matrix_resolution,
                 )
 
                 # Delete input table for catchment area origin points
@@ -243,14 +251,14 @@ class HeatmapMatrixProcess:
                     h3_index,
                     h3_centroid_x,
                     h3_centroid_y,
-                ) = self.get_h3_10_grid(
+                ) = self.get_cell_grid(
                     db_cursor,
                     h3_6_index,
                 )
 
                 self.insert_string = ""
                 self.num_rows_queued = 0
-                for i in range(len(origin_point_h3_10)):
+                for i in range(len(origin_point_cell_index)):
                     mapped_cost = network_to_grid_h3(
                         extent=extent,
                         zoom=10,
@@ -268,15 +276,15 @@ class HeatmapMatrixProcess:
                     )
 
                     self.add_to_insert_string(
-                        orig_h3_10=origin_point_h3_10[i],
-                        dest_h3_10=h3_index,
-                        cost=mapped_cost,
+                        orig_id=origin_point_cell_index[i],
+                        dest_id=h3_index,
+                        costs=mapped_cost,
                         orig_h3_3=origin_point_h3_3[i],
                     )
 
                     if (
                         self.num_rows_queued >= self.INSERT_BATCH_SIZE
-                        or i == len(origin_point_h3_10) - 1
+                        or i == len(origin_point_cell_index) - 1
                     ):
                         self.write_to_db(
                             db_cursor,

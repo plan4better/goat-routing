@@ -104,6 +104,7 @@ class CRUDCatchmentArea:
         obj_in: ICatchmentAreaActiveMobility,
         input_table: str,
         num_points: int,
+        origin_point_cell_resolution: int,
     ) -> Any:
         """Read relevant sub-network for catchment area calculation from polars dataframe."""
 
@@ -170,7 +171,7 @@ class CRUDCatchmentArea:
 
         # Create necessary artifical segments and add them to our sub network
         origin_point_connectors = []
-        origin_point_h3_10 = []
+        origin_point_cell_index = []
         origin_point_h3_3 = []
         segments_to_discard = []
         sql_get_artificial_segments = f"""
@@ -180,11 +181,12 @@ class CRUDCatchmentArea:
                 id, length_m, length_3857, class_, impedance_slope,
                 impedance_slope_reverse, impedance_surface,
                 CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                source, target, tags, h3_3, h3_6, point_h3_10, point_h3_3
-            FROM get_artificial_segments(
+                source, target, tags, h3_3, h3_6, point_cell_index, point_h3_3
+            FROM basic.get_artificial_segments(
                 '{input_table}',
                 {num_points},
-                '{",".join(valid_segment_classes)}'
+                '{",".join(valid_segment_classes)}',
+                {origin_point_cell_resolution}
             );
         """
         self.db_cursor.execute(sql_get_artificial_segments)
@@ -192,7 +194,7 @@ class CRUDCatchmentArea:
         for a_seg in result:
             if a_seg[0] is not None:
                 origin_point_connectors.append(a_seg[10])
-                origin_point_h3_10.append(a_seg[15])
+                origin_point_cell_index.append(a_seg[15])
                 origin_point_h3_3.append(a_seg[16])
                 segments_to_discard.append(a_seg[1])
 
@@ -265,7 +267,7 @@ class CRUDCatchmentArea:
         return (
             sub_network,
             origin_point_connectors,
-            origin_point_h3_10,
+            origin_point_cell_index,
             origin_point_h3_3,
         )
 
