@@ -26,7 +26,7 @@ jobs:
         id: docker_meta
         uses: docker/metadata-action@v4.6.0
         with:
-          images: goatcommunity/goat-core
+          images: ghcr.io/${{ github.repository }}
           flavor: |
             latest=auto
           tags: |
