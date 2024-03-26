@@ -15,7 +15,7 @@ ENV USE_PYGEOS 0
 ENV CELERYD_NODES 1
 ENV CELERY_BIN "celery"
 ENV CELERYD_CHDIR "/app"
-ENV CELERY_APP "src.workers.celery_app"
+ENV CELERY_APP "src.core.worker"
 ENV CELERYD_LOG_FILE "/var/log/celery/%n%I.log"
 ENV CELERYD_PID_FILE "/var/run/celery/%n.pid"
 ENV CELERYD_USER "root"
