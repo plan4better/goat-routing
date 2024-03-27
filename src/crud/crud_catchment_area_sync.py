@@ -17,6 +17,10 @@ from src.schemas.catchment_area import (
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.utils import make_dir
 
+# --- TODO ----
+# Cleanup and refactor this class (avoid duplication with async version)
+# Use new schema classes
+
 
 class FetchRoutingNetwork:
     def __init__(self, db_cursor):
