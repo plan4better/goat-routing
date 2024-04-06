@@ -608,7 +608,10 @@ class CRUDCatchmentArea:
                 CatchmentAreaTravelTimeCostActiveMobility,
                 CatchmentAreaTravelTimeCostMotorizedMobility,
             ]
-            if type(obj_in) == ICatchmentAreaActiveMobility:
+            if (
+                type(obj_in) == ICatchmentAreaActiveMobility
+                and is_travel_time_catchment_area
+            ):
                 speed = obj_in.travel_cost.speed / 3.6
             else:
                 speed = None

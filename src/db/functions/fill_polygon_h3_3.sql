@@ -1,6 +1,6 @@
 /*This function returns the h3 indexes that are intersecting the borderpoints of a specified geometry*/
-DROP FUNCTION IF EXISTS temporal.fill_polygon_h3_3;
-CREATE OR REPLACE FUNCTION temporal.fill_polygon_h3_3(geom geometry)
+DROP FUNCTION IF EXISTS basic.fill_polygon_h3_3;
+CREATE OR REPLACE FUNCTION basic.fill_polygon_h3_3(geom geometry)
 RETURNS TABLE (h3_index h3index, h3_short smallint, h3_boundary geometry(linestring, 4326), h3_geom geometry(polygon, 4326))
 LANGUAGE plpgsql
 AS $function$

@@ -408,7 +408,7 @@ def build_grid_interpolate_(
         grid_points, k=1, distance_upper_bound=200, workers=-1
     )
     distances[distances == np.inf] = np.NaN
-    additional_costs = 0 if speed is None else ((distances / speed) / 60)
+    additional_costs = distances if speed is None else ((distances / speed) / 60)
     indices_flatten = indices.flatten()
 
     unvalid_indices = np.asarray(indices_flatten == len(costs)).nonzero()[0]
@@ -452,7 +452,7 @@ def build_grid_interpolate_h3(
 
     # Account for additional cost of travel from node to centroid
     distances[distances == np.inf] = np.NaN
-    additional_costs = 0 if speed is None else ((distances / speed) / 60)
+    additional_costs = distances if speed is None else ((distances / speed) / 60)
     mapped_costs = np.rint(mapped_costs + additional_costs)
 
     # Discard cost of centroids which are further than the max travel time
