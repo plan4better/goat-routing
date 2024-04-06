@@ -51,7 +51,7 @@ BEGIN
                 SELECT
                     id, geom,
                     ST_SETSRID(ST_Buffer(geom::geography, 100)::geometry, 4326) AS buffer_geom,
-                    to_short_h3_3(h3_lat_lng_to_cell(ST_Centroid(geom)::point, 3)::bigint) AS h3_3
+                    basic.to_short_h3_3(h3_lat_lng_to_cell(ST_Centroid(geom)::point, 3)::bigint) AS h3_3
                 FROM temporal."%s"
                 LIMIT %s::int
             ),
@@ -131,7 +131,7 @@ BEGIN
                 artificial_segment.point_id = origin_segment.point_id[i - 1];
                 artificial_segment.point_geom = origin_segment.point_geom[i - 1];
                 artificial_segment.point_cell_index = h3_lat_lng_to_cell(artificial_segment.point_geom::point, point_cell_resolution);
-                artificial_segment.point_h3_3 = to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
+                artificial_segment.point_h3_3 = basic.to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
                 artificial_segment.id = artificial_seg_index;
                 new_geom = ST_SetSRID(ST_MakeLine(
                     origin_segment.point_geom[i - 1],
@@ -187,7 +187,7 @@ BEGIN
         artificial_segment.point_id = origin_segment.point_id[array_length(origin_segment.point_id, 1)];
         artificial_segment.point_geom = origin_segment.point_geom[array_length(origin_segment.point_geom, 1)];
         artificial_segment.point_cell_index = h3_lat_lng_to_cell(artificial_segment.point_geom::point, point_cell_resolution);
-        artificial_segment.point_h3_3 = to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
+        artificial_segment.point_h3_3 = basic.to_short_h3_3(h3_lat_lng_to_cell(artificial_segment.point_geom::point, 3)::bigint);
         artificial_segment.id = artificial_seg_index;
         new_geom = ST_SetSRID(ST_MakeLine(
             origin_segment.point_geom[array_length(origin_segment.point_geom, 1)],

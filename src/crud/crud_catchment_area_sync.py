@@ -143,7 +143,7 @@ class CRUDCatchmentArea:
                 FROM buffer,
                 LATERAL temporal.fill_polygon_h3_6(buffer.geom)
             )
-            SELECT to_short_h3_3(h3_cell_to_parent(h3_index, 3)::bigint) AS h3_3, ARRAY_AGG(to_short_h3_6(h3_index::bigint)) AS h3_6
+            SELECT basic.to_short_h3_3(h3_cell_to_parent(h3_index, 3)::bigint) AS h3_3, ARRAY_AGG(basic.to_short_h3_6(h3_index::bigint)) AS h3_6
             FROM cells
             GROUP BY h3_3;
         """
