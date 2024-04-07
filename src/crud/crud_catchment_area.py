@@ -423,7 +423,7 @@ class CRUDCatchmentArea:
             )
         elif type(obj_in.travel_cost) == CatchmentAreaTravelTimeCostMotorizedMobility:
             buffer_dist = obj_in.travel_cost.max_traveltime * (
-                (settings.CATCHMENT_AREA_CAR_BUFFER_SPEED * 1000) / 60
+                (settings.CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED * 1000) / 60
             )
         else:
             buffer_dist = obj_in.travel_cost.max_distance
@@ -628,7 +628,7 @@ class CRUDCatchmentArea:
                     ),
                     speed=speed,
                     zoom=12,
-                    use_distance=(not is_travel_time_catchment_area),
+                    is_distance_based=(not is_travel_time_catchment_area),
                 )
             else:
                 catchment_area_grid_index, h3_centroid_x, h3_centroid_y = (
@@ -650,7 +650,7 @@ class CRUDCatchmentArea:
                     centroid_x=h3_centroid_x,
                     centroid_y=h3_centroid_y,
                     zoom=12,
-                    use_distance=(not is_travel_time_catchment_area),
+                    is_distance_based=(not is_travel_time_catchment_area),
                 )
             print("Computed catchment area grid & network.")
 

@@ -273,6 +273,7 @@ class HeatmapMatrixProcess:
                         max_traveltime=catchment_area_request.travel_cost.max_traveltime,
                         centroid_x=h3_centroid_x,
                         centroid_y=h3_centroid_y,
+                        is_distance_based=False,
                     )
 
                     self.add_to_insert_string(
