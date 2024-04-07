@@ -39,7 +39,7 @@ class FetchRoutingNetwork:
                     SELECT ST_Union(geom) AS geom from {settings.NETWORK_REGION_TABLE}
                 )
                 SELECT g.h3_short FROM region r,
-                LATERAL temporal.fill_polygon_h3_3(r.geom) g;
+                LATERAL basic.fill_polygon_h3_3(r.geom) g;
             """
             self.db_cursor.execute(sql_get_h3_3_grid)
             result = self.db_cursor.fetchall()
@@ -141,7 +141,7 @@ class CRUDCatchmentArea:
             cells AS (
                 SELECT h3_index
                 FROM buffer,
-                LATERAL temporal.fill_polygon_h3_6(buffer.geom)
+                LATERAL basic.fill_polygon_h3_6(buffer.geom)
             )
             SELECT basic.to_short_h3_3(h3_cell_to_parent(h3_index, 3)::bigint) AS h3_3, ARRAY_AGG(basic.to_short_h3_6(h3_index::bigint)) AS h3_6
             FROM cells
