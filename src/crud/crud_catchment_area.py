@@ -349,7 +349,8 @@ class CRUDCatchmentArea:
         elif mode == CatchmentAreaRoutingTypeActiveMobility.bicycle:
             return sub_network.with_columns(
                 pl.when(
-                    pl.col("class_") != "pedestrian" and pl.col("class_") != "crosswalk"
+                    (pl.col("class_") != "pedestrian")
+                    & (pl.col("class_") != "crosswalk")
                 )
                 .then(
                     (
@@ -363,7 +364,8 @@ class CRUDCatchmentArea:
                 )  # This calculation is invoked when the segment class requires cyclists to walk their bicycle
                 .alias("cost"),
                 pl.when(
-                    pl.col("class_") != "pedestrian" and pl.col("class_") != "crosswalk"
+                    (pl.col("class_") != "pedestrian")
+                    & (pl.col("class_") != "crosswalk")
                 )
                 .then(
                     (
@@ -384,7 +386,8 @@ class CRUDCatchmentArea:
         elif mode == CatchmentAreaRoutingTypeActiveMobility.pedelec:
             return sub_network.with_columns(
                 pl.when(
-                    pl.col("class_") != "pedestrian" and pl.col("class_") != "crosswalk"
+                    (pl.col("class_") != "pedestrian")
+                    & (pl.col("class_") != "crosswalk")
                 )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
@@ -392,7 +395,8 @@ class CRUDCatchmentArea:
                 )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
                 .alias("cost"),
                 pl.when(
-                    pl.col("class_") != "pedestrian" and pl.col("class_") != "crosswalk"
+                    (pl.col("class_") != "pedestrian")
+                    & (pl.col("class_") != "crosswalk")
                 )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
