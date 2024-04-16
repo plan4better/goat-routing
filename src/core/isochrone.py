@@ -677,7 +677,7 @@ def compute_isochrone(
     start_vertices,
     travel_time,
     speed,
-    zoom: int = 10,
+    zoom,
     return_network: bool = True,
     is_distance_based: bool = False,
 ):
@@ -758,7 +758,7 @@ def compute_isochrone_h3(
     speed,
     centroid_x,
     centroid_y,
-    zoom: int = 10,
+    zoom,
     is_distance_based: bool = False,
 ):
     """

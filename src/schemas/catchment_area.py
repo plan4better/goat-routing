@@ -153,7 +153,7 @@ class CatchmentAreaTravelTimeCostMotorizedMobility(BaseModel):
         title="Max Travel Time",
         description="The maximum travel time in minutes.",
         ge=1,
-        le=60,
+        le=90,
     )
     steps: int = Field(
         ...,
@@ -164,7 +164,7 @@ class CatchmentAreaTravelTimeCostMotorizedMobility(BaseModel):
     # Ensure the number of steps doesn't exceed the maximum traveltime
     @validator("steps", pre=True, always=True)
     def valid_num_steps(cls, v):
-        if v > 45:
+        if v > 90:
             raise ValueError(
                 "The number of steps must not exceed the maximum traveltime."
             )

@@ -406,9 +406,11 @@ class CRUDCatchmentArea:
             )
         elif mode == CatchmentAreaRoutingTypeCar.car:
             return sub_network.with_columns(
-                (pl.col("length_m") / (pl.col("maxspeed_forward") / 3.6)).alias("cost"),
+                (pl.col("length_m") / ((pl.col("maxspeed_forward") * 0.7) / 3.6)).alias(
+                    "cost"
+                ),
                 pl.when(pl.col("maxspeed_backward") is not None)
-                .then(pl.col("length_m") / (pl.col("maxspeed_backward") / 3.6))
+                .then(pl.col("length_m") / ((pl.col("maxspeed_backward") * 0.7) / 3.6))
                 .otherwise(
                     99999
                 )  # This is a one-way segment, so assign a very high cost to the reverse direction
@@ -612,6 +614,7 @@ class CRUDCatchmentArea:
                 CatchmentAreaTravelTimeCostActiveMobility,
                 CatchmentAreaTravelTimeCostMotorizedMobility,
             ]
+
             if (
                 type(obj_in) == ICatchmentAreaActiveMobility
                 and is_travel_time_catchment_area
@@ -619,6 +622,11 @@ class CRUDCatchmentArea:
                 speed = obj_in.travel_cost.speed / 3.6
             else:
                 speed = None
+
+            if type(obj_in) == ICatchmentAreaActiveMobility:
+                zoom = 12
+            else:
+                zoom = 10  # Use lower resolution grid for car catchment areas
 
             catchment_area_grid_index = None
             if obj_in.catchment_area_type != "rectangular_grid":
@@ -631,7 +639,7 @@ class CRUDCatchmentArea:
                         else obj_in.travel_cost.max_distance
                     ),
                     speed=speed,
-                    zoom=12,
+                    zoom=zoom,
                     is_distance_based=(not is_travel_time_catchment_area),
                 )
             else:
@@ -653,7 +661,7 @@ class CRUDCatchmentArea:
                     speed=speed,
                     centroid_x=h3_centroid_x,
                     centroid_y=h3_centroid_y,
-                    zoom=12,
+                    zoom=zoom,
                     is_distance_based=(not is_travel_time_catchment_area),
                 )
             print("Computed catchment area grid & network.")
