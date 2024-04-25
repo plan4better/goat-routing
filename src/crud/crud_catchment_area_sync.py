@@ -10,16 +10,17 @@ from src.core.config import settings
 from src.schemas.catchment_area import (
     SEGMENT_DATA_SCHEMA,
     VALID_BICYCLE_CLASSES,
+    VALID_CAR_CLASSES,
     VALID_WALKING_CLASSES,
+    CatchmentAreaRoutingTypeActiveMobility,
+    CatchmentAreaRoutingTypeCar,
+    CatchmentAreaTravelTimeCostActiveMobility,
+    CatchmentAreaTravelTimeCostMotorizedMobility,
     ICatchmentAreaActiveMobility,
-    TravelTimeCostActiveMobility,
+    ICatchmentAreaCar,
 )
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.utils import make_dir
-
-# --- TODO ----
-# Cleanup and refactor this class (avoid duplication with async version)
-# Use new schema classes
 
 
 class FetchRoutingNetwork:
@@ -34,9 +35,11 @@ class FetchRoutingNetwork:
         # Get network H3 cells
         h3_3_grid = []
         try:
-            sql_get_h3_3_grid = f"""
+            # TODO Don't hardcode PT geofence, compute for all of Europe
+            # Buffer geofence by 80 km while computing Germany matrix to process border regions correctly
+            sql_get_h3_3_grid = """
                 WITH region AS (
-                    SELECT ST_Union(geom) AS geom from {settings.NETWORK_REGION_TABLE}
+                    SELECT ST_Buffer(ST_Union(geom)::geography, 80000)::geometry AS geom FROM basic.geofence_pt
                 )
                 SELECT g.h3_short FROM region r,
                 LATERAL basic.fill_polygon_h3_3(r.geom) g;
@@ -69,10 +72,9 @@ class FetchRoutingNetwork:
                     segments_df[h3_index] = pl.read_database_uri(
                         query=f"""
                             SELECT
-                                id, length_m, length_3857,
-                                class_, impedance_slope, impedance_slope_reverse,
+                                id, length_m, length_3857, class_, impedance_slope, impedance_slope_reverse,
                                 impedance_surface, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                                source, target, CAST(tags AS TEXT) AS tags, h3_3, h3_6
+                                maxspeed_forward, maxspeed_backward, source, target, h3_3, h3_6
                             FROM basic.segment
                             WHERE h3_3 = {h3_index}
                         """,
@@ -104,7 +106,7 @@ class CRUDCatchmentArea:
     def read_network(
         self,
         routing_network: dict,
-        obj_in: ICatchmentAreaActiveMobility,
+        obj_in: ICatchmentAreaActiveMobility | ICatchmentAreaCar,
         input_table: str,
         num_points: int,
         origin_point_cell_resolution: int,
@@ -112,16 +114,23 @@ class CRUDCatchmentArea:
         """Read relevant sub-network for catchment area calculation from polars dataframe."""
 
         # Get valid segment classes based on transport mode
-        valid_segment_classes = (
-            VALID_WALKING_CLASSES
-            if obj_in.routing_type == "walking"
-            else VALID_BICYCLE_CLASSES
-        )
+        if type(obj_in) == ICatchmentAreaActiveMobility:
+            valid_segment_classes = (
+                VALID_WALKING_CLASSES
+                if obj_in.routing_type == "walking"
+                else VALID_BICYCLE_CLASSES
+            )
+        else:
+            valid_segment_classes = VALID_CAR_CLASSES
 
         # Compute buffer distance for identifying relevant H3_6 cells
-        if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
+        if type(obj_in.travel_cost) == CatchmentAreaTravelTimeCostActiveMobility:
             buffer_dist = obj_in.travel_cost.max_traveltime * (
                 (obj_in.travel_cost.speed * 1000) / 60
+            )
+        elif type(obj_in.travel_cost) == CatchmentAreaTravelTimeCostMotorizedMobility:
+            buffer_dist = obj_in.travel_cost.max_traveltime * (
+                (settings.CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED * 1000) / 60
             )
         else:
             buffer_dist = obj_in.travel_cost.max_distance
@@ -184,7 +193,8 @@ class CRUDCatchmentArea:
                 id, length_m, length_3857, class_, impedance_slope,
                 impedance_slope_reverse, impedance_surface,
                 CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                source, target, tags, h3_3, h3_6, point_cell_index, point_h3_3
+                maxspeed_forward, maxspeed_backward, source, target,
+                h3_3, h3_6, point_cell_index, point_h3_3
             FROM basic.get_artificial_segments(
                 '{input_table}',
                 {num_points},
@@ -196,9 +206,9 @@ class CRUDCatchmentArea:
         result = self.db_cursor.fetchall()
         for a_seg in result:
             if a_seg[0] is not None:
-                origin_point_connectors.append(a_seg[10])
-                origin_point_cell_index.append(a_seg[15])
-                origin_point_h3_3.append(a_seg[16])
+                origin_point_connectors.append(a_seg[12])
+                origin_point_cell_index.append(a_seg[16])
+                origin_point_h3_3.append(a_seg[17])
                 segments_to_discard.append(a_seg[1])
 
             new_df = pl.DataFrame(
@@ -212,11 +222,12 @@ class CRUDCatchmentArea:
                         "impedance_slope_reverse": a_seg[7],
                         "impedance_surface": a_seg[8],
                         "coordinates_3857": a_seg[9],
-                        "source": a_seg[10],
-                        "target": a_seg[11],
-                        "tags": a_seg[12],
-                        "h3_3": a_seg[13],
-                        "h3_6": a_seg[14],
+                        "maxspeed_forward": a_seg[10],
+                        "maxspeed_backward": a_seg[11],
+                        "source": a_seg[12],
+                        "target": a_seg[13],
+                        "h3_3": a_seg[14],
+                        "h3_6": a_seg[15],
                     }
                 ],
                 schema_overrides=SEGMENT_DATA_SCHEMA,
@@ -235,21 +246,27 @@ class CRUDCatchmentArea:
         # TODO: We need to read the scenario network dynamically from DB if a scenario is selected.
 
         # Replace all NULL values in the impedance columns with 0
-        sub_network = sub_network.with_columns(pl.col("impedance_slope").fill_null(0))
-        sub_network = sub_network.with_columns(
-            pl.col("impedance_slope_reverse").fill_null(0)
-        )
         sub_network = sub_network.with_columns(pl.col("impedance_surface").fill_null(0))
 
         # Compute cost for each segment
-        if type(obj_in.travel_cost) == TravelTimeCostActiveMobility:
+        if type(obj_in.travel_cost) in [
+            CatchmentAreaTravelTimeCostActiveMobility,
+            CatchmentAreaTravelTimeCostMotorizedMobility,
+        ]:
             # If producing a travel time cost based catchment area, compute segment cost accordingly
             sub_network = self.compute_segment_cost(
-                sub_network,
-                obj_in.routing_type,
-                obj_in.travel_cost.speed / 3.6,
+                sub_network=sub_network,
+                mode=obj_in.routing_type,
+                speed=(
+                    obj_in.travel_cost.speed / 3.6
+                    if type(obj_in.travel_cost)
+                    == CatchmentAreaTravelTimeCostActiveMobility
+                    else None
+                ),
             )
         else:
+            # TODO: Refactor this into a separate function as slope / surface impedance should be included
+            # for bicycle / pedelec routing and one-ways should be avoided for car routing
             # If producing a distance cost based catchment area, use the segment length as cost
             sub_network = sub_network.with_columns(
                 pl.col("length_m").alias("cost"),
@@ -318,14 +335,17 @@ class CRUDCatchmentArea:
     def compute_segment_cost(self, sub_network, mode, speed):
         """Compute the cost of a segment based on the mode, speed, impedance, etc."""
 
-        if mode == "walking":
+        if mode == CatchmentAreaRoutingTypeActiveMobility.walking:
             return sub_network.with_columns(
                 (pl.col("length_m") / speed).alias("cost"),
                 (pl.col("length_m") / speed).alias("reverse_cost"),
             )
-        elif mode == "bicycle":
+        elif mode == CatchmentAreaRoutingTypeActiveMobility.bicycle:
             return sub_network.with_columns(
-                pl.when(pl.col("class_") != "pedestrian")
+                pl.when(
+                    (pl.col("class_") != "pedestrian")
+                    & (pl.col("class_") != "crosswalk")
+                )
                 .then(
                     (
                         pl.col("length_m")
@@ -337,7 +357,10 @@ class CRUDCatchmentArea:
                     pl.col("length_m") / speed
                 )  # This calculation is invoked when the segment class requires cyclists to walk their bicycle
                 .alias("cost"),
-                pl.when(pl.col("class_") != "pedestrian")
+                pl.when(
+                    (pl.col("class_") != "pedestrian")
+                    & (pl.col("class_") != "crosswalk")
+                )
                 .then(
                     (
                         pl.col("length_m")
@@ -354,19 +377,37 @@ class CRUDCatchmentArea:
                 )  # This calculation is invoked when the segment class requires cyclists to walk their bicycle
                 .alias("reverse_cost"),
             )
-        elif mode == "pedelec":
+        elif mode == CatchmentAreaRoutingTypeActiveMobility.pedelec:
             return sub_network.with_columns(
-                pl.when(pl.col("class_") != "pedestrian")
+                pl.when(
+                    (pl.col("class_") != "pedestrian")
+                    & (pl.col("class_") != "crosswalk")
+                )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
                     pl.col("length_m") / speed
                 )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
                 .alias("cost"),
-                pl.when(pl.col("class_") != "pedestrian")
+                pl.when(
+                    (pl.col("class_") != "pedestrian")
+                    & (pl.col("class_") != "crosswalk")
+                )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
                     pl.col("length_m") / speed
                 )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
+                .alias("reverse_cost"),
+            )
+        elif mode == CatchmentAreaRoutingTypeCar.car:
+            return sub_network.with_columns(
+                (pl.col("length_m") / ((pl.col("maxspeed_forward") * 0.7) / 3.6)).alias(
+                    "cost"
+                ),
+                pl.when(pl.col("maxspeed_backward") is not None)
+                .then(pl.col("length_m") / ((pl.col("maxspeed_backward") * 0.7) / 3.6))
+                .otherwise(
+                    99999
+                )  # This is a one-way segment, so assign a very high cost to the reverse direction
                 .alias("reverse_cost"),
             )
         else:

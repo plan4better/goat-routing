@@ -13,10 +13,12 @@ from src.core.isochrone import (
 )
 from src.crud.crud_catchment_area_sync import CRUDCatchmentArea, FetchRoutingNetwork
 from src.schemas.catchment_area import (
+    CatchmentAreaRoutingTypeActiveMobility,
+    CatchmentAreaRoutingTypeCar,
     CatchmentAreaStartingPoints,
     CatchmentAreaType,
     ICatchmentAreaActiveMobility,
-    RoutingActiveMobilityType,
+    ICatchmentAreaCar,
 )
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.schemas.heatmap import MATRIX_RESOLUTION_CONFIG, ROUTING_COST_CONFIG
@@ -27,26 +29,29 @@ class HeatmapMatrixProcess:
         self,
         thread_id: int,
         chunk: list,
-        routing_type: RoutingActiveMobilityType,
+        routing_type: (
+            CatchmentAreaRoutingTypeActiveMobility | CatchmentAreaRoutingTypeCar
+        ),
     ):
         self.thread_id = thread_id
         self.routing_network = None
         self.chunk = chunk
         self.routing_type = routing_type
         self.INSERT_BATCH_SIZE = 800
-
-        self.buffer_distance = ROUTING_COST_CONFIG[
-            routing_type.value
-        ].max_traveltime * ((ROUTING_COST_CONFIG[routing_type.value].speed * 1000) / 60)
         self.matrix_resolution = MATRIX_RESOLUTION_CONFIG[routing_type.value]
 
-    def generate_multi_catchment_area_request(
-        self, db_cursor, h3_6_index: str, routing_type: RoutingActiveMobilityType
-    ):
-        """Produce a multi-catchment area request for a given H3_6 index and routing type."""
+        max_traveltime = ROUTING_COST_CONFIG[routing_type.value].max_traveltime
+        if type(routing_type) == CatchmentAreaRoutingTypeActiveMobility:
+            self.buffer_distance = max_traveltime * (
+                (ROUTING_COST_CONFIG[routing_type.value].speed * 1000) / 60
+            )
+        else:
+            self.buffer_distance = max_traveltime * (
+                (settings.CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED * 1000) / 60
+            )
 
-        origin_lat = []
-        origin_lng = []
+    def generate_multi_catchment_area_request(self, db_cursor, h3_6_index: str):
+        """Produce a multi-catchment area request for a given H3_6 index and routing type."""
 
         # Get the centroid coordinates for all child cells of the supplied H3_6 parent cell
         sql_get_centroid = f"""
@@ -61,23 +66,41 @@ class HeatmapMatrixProcess:
         result = db_cursor.fetchall()
 
         # Group centroid coordinates into latitude and longitude lists
+        origin_lat = []
+        origin_lng = []
         for centroid in result:
             origin_lat.append(centroid[1])
             origin_lng.append(centroid[0])
 
         # Produce final ICatchmentAreaActiveMobility object (request for CRUDCatchmentArea)
-        return ICatchmentAreaActiveMobility(
-            starting_points=CatchmentAreaStartingPoints(
-                latitude=origin_lat,
-                longitude=origin_lng,
-            ),
-            routing_type=routing_type,
-            travel_cost=ROUTING_COST_CONFIG[routing_type.value],
-            scenario_id=None,
-            catchment_area_type=CatchmentAreaType.polygon,
-            polygon_difference=True,
-            result_table="",
-            layer_id=None,
+        return (
+            ICatchmentAreaActiveMobility(
+                starting_points=CatchmentAreaStartingPoints(
+                    latitude=origin_lat,
+                    longitude=origin_lng,
+                ),
+                routing_type=self.routing_type,
+                travel_cost=ROUTING_COST_CONFIG[self.routing_type.value],
+                scenario_id=None,
+                catchment_area_type=CatchmentAreaType.polygon,
+                polygon_difference=True,
+                result_table="",
+                layer_id=None,
+            )
+            if type(self.routing_type) == CatchmentAreaRoutingTypeActiveMobility
+            else ICatchmentAreaCar(
+                starting_points=CatchmentAreaStartingPoints(
+                    latitude=origin_lat,
+                    longitude=origin_lng,
+                ),
+                routing_type=self.routing_type,
+                travel_cost=ROUTING_COST_CONFIG[self.routing_type.value],
+                scenario_id=None,
+                catchment_area_type=CatchmentAreaType.polygon,
+                polygon_difference=True,
+                result_table="",
+                layer_id=None,
+            )
         )
 
     def get_cell_grid(self, db_cursor, h3_6_index: str):
@@ -132,13 +155,6 @@ class HeatmapMatrixProcess:
             ),"""
             self.num_rows_queued += 1
 
-        """cost_map = json.dumps(cost_map)
-
-        self.insert_string += (
-            f"('{orig_h3_10}'::h3index, '{cost_map}'::jsonb, {orig_h3_3}),"
-        )
-        self.num_rows_queued += 1"""
-
     def write_to_db(self, db_cursor, db_connection):
         db_cursor.execute(
             f"""
@@ -166,7 +182,6 @@ class HeatmapMatrixProcess:
             catchment_area_request = self.generate_multi_catchment_area_request(
                 db_cursor=db_cursor,
                 h3_6_index=h3_6_index,
-                routing_type=self.routing_type,
             )
 
             sub_routing_network = None
@@ -215,6 +230,15 @@ class HeatmapMatrixProcess:
                     break
 
             # Compute heatmap grid utilizing processed sub-network
+            if type(catchment_area_request) == ICatchmentAreaActiveMobility:
+                speed = catchment_area_request.travel_cost.speed / 3.6
+            else:
+                speed = None
+
+            if type(catchment_area_request) == ICatchmentAreaActiveMobility:
+                zoom = 12
+            else:
+                zoom = 10  # Use lower resolution grid for car catchment areas
             try:
                 (
                     edges_source,
@@ -261,7 +285,7 @@ class HeatmapMatrixProcess:
                 for i in range(len(origin_point_cell_index)):
                     mapped_cost = network_to_grid_h3(
                         extent=extent,
-                        zoom=10,
+                        zoom=zoom,
                         edges_source=edges_source,
                         edges_target=edges_target,
                         edges_length=edges_length,
@@ -269,7 +293,7 @@ class HeatmapMatrixProcess:
                         geom_array=geom_array,
                         distances=distances_list[i],
                         node_coords=node_coords,
-                        speed=catchment_area_request.travel_cost.speed / 3.6,
+                        speed=speed,
                         max_traveltime=catchment_area_request.travel_cost.max_traveltime,
                         centroid_x=h3_centroid_x,
                         centroid_y=h3_centroid_y,

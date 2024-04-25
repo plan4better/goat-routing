@@ -4,13 +4,13 @@ import psycopg2
 
 from src.core.config import settings
 from src.preparation.heatmap_matrix_process import HeatmapMatrixProcess
-from src.schemas.catchment_area import RoutingActiveMobilityType
+from src.schemas.catchment_area import CatchmentAreaRoutingTypeActiveMobility
 
 
 class HeatmapMatrixPreparation:
     def __init__(self):
         # User configurable
-        self.ROUTING_TYPE = RoutingActiveMobilityType.walking
+        self.ROUTING_TYPE = CatchmentAreaRoutingTypeActiveMobility.walking
         self.NUM_THREADS = 20
 
     def get_cells_to_process(self, db_cursor):
