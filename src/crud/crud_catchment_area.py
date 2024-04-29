@@ -502,7 +502,8 @@ class CRUDCatchmentArea:
                     SELECT ST_DIFFERENCE(a.geom, b.geom) AS geom
                     FROM isochrones_with_id b
                     WHERE a.id - 1 = b.id
-                ) j ON {"TRUE" if obj_in.polygon_difference else "FALSE"};
+                ) j ON {"TRUE" if obj_in.polygon_difference else "FALSE"}
+                ORDER BY a.MINUTE DESC;
             """
 
             await self.db_connection.execute(sql_insert_into_table)
