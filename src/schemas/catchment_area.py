@@ -14,9 +14,10 @@ SEGMENT_DATA_SCHEMA = {
     "impedance_slope_reverse": pl.Float64,
     "impedance_surface": pl.Float32,
     "coordinates_3857": pl.Utf8,
+    "maxspeed_forward": pl.Int16,
+    "maxspeed_backward": pl.Int16,
     "source": pl.Int64,
     "target": pl.Int64,
-    "tags": pl.Utf8,
     "h3_3": pl.Int32,
     "h3_6": pl.Int32,
 }
@@ -25,13 +26,16 @@ VALID_WALKING_CLASSES = [
     "secondary",
     "tertiary",
     "residential",
-    "livingStreet",
+    "living_street",
     "trunk",
     "unclassified",
-    "parkingAisle",
+    "parking_aisle",
     "driveway",
+    "alley",
     "pedestrian",
     "footway",
+    "sidewalk",
+    "crosswalk",
     "steps",
     "track",
     "bridleway",
@@ -42,16 +46,32 @@ VALID_BICYCLE_CLASSES = [
     "secondary",
     "tertiary",
     "residential",
-    "livingStreet",
+    "living_street",
     "trunk",
     "unclassified",
-    "parkingAisle",
+    "parking_aisle",
     "driveway",
+    "alley",
     "pedestrian",
+    "crosswalk",
     "track",
     "cycleway",
     "bridleway",
     "unknown",
+]
+
+VALID_CAR_CLASSES = [
+    "motorway",
+    "primary",
+    "secondary",
+    "tertiary",
+    "residential",
+    "living_street",
+    "trunk",
+    "parking_aisle",
+    "driveway",
+    "alley",
+    "track",
 ]
 
 
@@ -78,7 +98,7 @@ class CatchmentAreaStartingPoints(BaseModel):
     )
 
 
-class RoutingActiveMobilityType(str, Enum):
+class CatchmentAreaRoutingTypeActiveMobility(str, Enum):
     """Routing active mobility type schema."""
 
     walking = "walking"
@@ -86,7 +106,13 @@ class RoutingActiveMobilityType(str, Enum):
     pedelec = "pedelec"
 
 
-class TravelTimeCostActiveMobility(BaseModel):
+class CatchmentAreaRoutingTypeCar(str, Enum):
+    """Routing car type schema."""
+
+    car = "car"
+
+
+class CatchmentAreaTravelTimeCostActiveMobility(BaseModel):
     """Travel time cost schema."""
 
     max_traveltime: int = Field(
@@ -119,8 +145,61 @@ class TravelTimeCostActiveMobility(BaseModel):
         return v
 
 
+class CatchmentAreaTravelTimeCostMotorizedMobility(BaseModel):
+    """Travel time cost schema."""
+
+    max_traveltime: int = Field(
+        ...,
+        title="Max Travel Time",
+        description="The maximum travel time in minutes.",
+        ge=1,
+        le=90,
+    )
+    steps: int = Field(
+        ...,
+        title="Steps",
+        description="The number of steps.",
+    )
+
+    # Ensure the number of steps doesn't exceed the maximum traveltime
+    @validator("steps", pre=True, always=True)
+    def valid_num_steps(cls, v):
+        if v > 90:
+            raise ValueError(
+                "The number of steps must not exceed the maximum traveltime."
+            )
+        return v
+
+
 # TODO: Check how to treat miles
-class TravelDistanceCostActiveMobility(BaseModel):
+class CatchmentAreaTravelDistanceCostActiveMobility(BaseModel):
+    """Travel distance cost schema."""
+
+    max_distance: int = Field(
+        ...,
+        title="Max Distance",
+        description="The maximum distance in meters.",
+        ge=50,
+        le=20000,
+    )
+    steps: int = Field(
+        ...,
+        title="Steps",
+        description="The number of steps.",
+    )
+
+    # Ensure the number of steps doesn't exceed the maximum distance
+    @validator("steps", pre=True, always=True)
+    def valid_num_steps(cls, v):
+        if v > 20000:
+            raise ValueError(
+                "The number of steps must not exceed the maximum distance."
+            )
+        return v
+
+
+# TODO: Check how to treat miles
+class CatchmentAreaTravelDistanceCostCar(BaseModel):
     """Travel distance cost schema."""
 
     max_distance: int = Field(
@@ -154,17 +233,90 @@ class ICatchmentAreaActiveMobility(BaseModel):
         title="Starting Points",
         description="The starting points of the catchment area.",
     )
-    routing_type: RoutingActiveMobilityType = Field(
+    routing_type: CatchmentAreaRoutingTypeActiveMobility = Field(
         ...,
         title="Routing Type",
         description="The routing type of the catchment area.",
     )
-    travel_cost: TravelTimeCostActiveMobility | TravelDistanceCostActiveMobility = (
-        Field(
-            ...,
-            title="Travel Cost",
-            description="The travel cost of the catchment area.",
-        )
+    travel_cost: (
+        CatchmentAreaTravelTimeCostActiveMobility
+        | CatchmentAreaTravelDistanceCostActiveMobility
+    ) = Field(
+        ...,
+        title="Travel Cost",
+        description="The travel cost of the catchment area.",
+    )
+    scenario_id: UUID | None = Field(
+        None,
+        title="Scenario ID",
+        description="The ID of the scenario that is used for the routing.",
+    )
+    catchment_area_type: CatchmentAreaType = Field(
+        ...,
+        title="Return Type",
+        description="The return type of the catchment area.",
+    )
+    polygon_difference: bool | None = Field(
+        None,
+        title="Polygon Difference",
+        description="If true, the polygons returned will be the geometrical difference of two following calculations.",
+    )
+    result_table: str = Field(
+        ...,
+        title="Result Table",
+        description="The table name the results should be saved.",
+    )
+    layer_id: UUID | None = Field(
+        ...,
+        title="Layer ID",
+        description="The ID of the layer the results should be saved.",
+    )
+
+    # Check that polygon difference exists if catchment area type is polygon
+    @validator("polygon_difference", pre=True, always=True)
+    def check_polygon_difference(cls, v, values):
+        if (
+            values["catchment_area_type"] == CatchmentAreaType.polygon.value
+            and v is None
+        ):
+            raise ValueError(
+                "The polygon difference must be set if the catchment area type is polygon."
+            )
+        return v
+
+    # Check that polygon difference is not specified if catchment area type is not polygon
+    @validator("polygon_difference", pre=True, always=True)
+    def check_polygon_difference_not_specified(cls, v, values):
+        if (
+            values["catchment_area_type"] != CatchmentAreaType.polygon.value
+            and v is not None
+        ):
+            raise ValueError(
+                "The polygon difference must not be set if the catchment area type is not polygon."
+            )
+        return v
+
+
+class ICatchmentAreaCar(BaseModel):
+    """Model for the car catchment area request."""
+
+    starting_points: CatchmentAreaStartingPoints = Field(
+        ...,
+        title="Starting Points",
+        description="The starting points of the catchment area.",
+    )
+    routing_type: CatchmentAreaRoutingTypeCar = Field(
+        ...,
+        title="Routing Type",
+        description="The routing type of the catchment area.",
+    )
+    travel_cost: (
+        CatchmentAreaTravelTimeCostMotorizedMobility
+        | CatchmentAreaTravelDistanceCostCar
+    ) = Field(
+        ...,
+        title="Travel Cost",
+        description="The travel cost of the catchment area.",
     )
     scenario_id: UUID | None = Field(
         None,
@@ -371,5 +523,97 @@ request_examples = {
                 "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
             },
         },
-    }
+    },
+    "catchment_area_motorized_mobility": {
+        # 1. Single catchment area for car (time based)
+        "single_point_car_time": {
+            "summary": "Single point catchment area car (time based)",
+            "value": {
+                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "routing_type": "car",
+                "travel_cost": {
+                    "max_traveltime": 30,
+                    "steps": 5,
+                },
+                "catchment_area_type": "polygon",
+                "polygon_difference": True,
+                "result_table": "polygon_744e4fd1685c495c8b02efebce875359",
+                "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
+            },
+        },
+        # 2. Single catchment area for car (distance based)
+        "single_point_car_distance": {
+            "summary": "Single point catchment area car (distance based)",
+            "value": {
+                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "routing_type": "car",
+                "travel_cost": {
+                    "max_distance": 10000,
+                    "steps": 100,
+                },
+                "catchment_area_type": "polygon",
+                "polygon_difference": True,
+                "result_table": "polygon_744e4fd1685c495c8b02efebce875359",
+                "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
+            },
+        },
+        # 3. Single catchment area for car with scenario
+        "single_point_car_scenario": {
+            "summary": "Single point catchment area car",
+            "value": {
+                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "routing_type": "car",
+                "travel_cost": {
+                    "max_traveltime": 30,
+                    "steps": 10,
+                },
+                "catchment_area_type": "polygon",
+                "polygon_difference": True,
+                "scenario_id": "e7dcaae4-1750-49b7-89a5-9510bf2761ad",
+                "result_table": "polygon_744e4fd1685c495c8b02efebce875359",
+                "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
+            },
+        },
+        # 4. Multi-catchment area car with more than one starting point
+        "multi_point_car": {
+            "summary": "Multi point catchment area car",
+            "value": {
+                "starting_points": {
+                    "latitude": [
+                        52.5200,
+                        52.5210,
+                        52.5220,
+                        52.5230,
+                        52.5240,
+                        52.5250,
+                        52.5260,
+                        52.5270,
+                        52.5280,
+                        52.5290,
+                    ],
+                    "longitude": [
+                        13.4050,
+                        13.4060,
+                        13.4070,
+                        13.4080,
+                        13.4090,
+                        13.4100,
+                        13.4110,
+                        13.4120,
+                        13.4130,
+                        13.4140,
+                    ],
+                },
+                "routing_type": "car",
+                "travel_cost": {
+                    "max_traveltime": 30,
+                    "steps": 10,
+                },
+                "catchment_area_type": "polygon",
+                "polygon_difference": True,
+                "result_table": "polygon_744e4fd1685c495c8b02efebce875359",
+                "layer_id": "744e4fd1-685c-495c-8b02-efebce875359",
+            },
+        },
+    },
 }

@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     PROJECT_NAME: Optional[str] = "GOAT Routing API"
     CACHE_DIR: str = "/app/src/cache"
 
-    NETWORK_REGION_TABLE = "temporal.network_region"
+    NETWORK_REGION_TABLE = "basic.geofence_active_mobility"
+
+    CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED = 80  # km/h
 
     CELERY_BROKER_URL: Optional[str] = "pyamqp://guest@rabbitmq//"
     REDIS_HOST: Optional[str] = "redis"

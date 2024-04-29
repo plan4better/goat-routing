@@ -387,7 +387,14 @@ def get_geom_array(edges_geom):
 
 
 def build_grid_interpolate_(
-    points, costs, extent, step_x, step_y, speed, max_traveltime
+    points,
+    costs,
+    extent,
+    step_x,
+    step_y,
+    speed,
+    max_traveltime,
+    is_distance_based: bool,
 ):
     """
     Build grid interpolate
@@ -408,7 +415,11 @@ def build_grid_interpolate_(
         grid_points, k=1, distance_upper_bound=200, workers=-1
     )
     distances[distances == np.inf] = np.NaN
-    additional_costs = 0 if speed is None else ((distances / speed) / 60)
+    additional_costs = (
+        distances
+        if is_distance_based
+        else 0 if speed is None else ((distances / speed) / 60)
+    )
     indices_flatten = indices.flatten()
 
     unvalid_indices = np.asarray(indices_flatten == len(costs)).nonzero()[0]
@@ -423,7 +434,13 @@ def build_grid_interpolate_(
 
 
 def build_grid_interpolate_h3(
-    points, costs, centroid_x, centroid_y, speed, max_traveltime
+    points,
+    costs,
+    centroid_x,
+    centroid_y,
+    speed,
+    max_traveltime,
+    is_distance_based: bool,
 ):
     """
     Build grid interpolate
@@ -452,7 +469,11 @@ def build_grid_interpolate_h3(
 
     # Account for additional cost of travel from node to centroid
     distances[distances == np.inf] = np.NaN
-    additional_costs = 0 if speed is None else ((distances / speed) / 60)
+    additional_costs = (
+        distances
+        if is_distance_based
+        else 0 if speed is None else ((distances / speed) / 60)
+    )
     mapped_costs = np.rint(mapped_costs + additional_costs)
 
     # Discard cost of centroids which are further than the max travel time
@@ -512,6 +533,7 @@ def network_to_grid(
     node_coords,
     speed,
     max_traveltime,
+    is_distance_based: bool,
 ):
     # minx, miny, maxx, maxy
     width_meter = extent[2] - extent[0]
@@ -571,6 +593,7 @@ def network_to_grid(
         step_y=web_mercator_y_step,
         speed=speed,
         max_traveltime=max_traveltime,
+        is_distance_based=is_distance_based,
     )
 
     # build grid data (single depth)
@@ -593,6 +616,7 @@ def network_to_grid_h3(
     max_traveltime,
     centroid_x,
     centroid_y,
+    is_distance_based: bool,
 ):
     # Pixel coordinates origin is at the top left corner of the image. (y of top right/left corner is smaller than y of bottom right/left corner)
     xy_bottom_left = [
@@ -642,6 +666,7 @@ def network_to_grid_h3(
         centroid_y,
         speed,
         max_traveltime,
+        is_distance_based,
     )
 
     return mapped_cost
@@ -652,9 +677,9 @@ def compute_isochrone(
     start_vertices,
     travel_time,
     speed,
-    zoom: int = 10,
+    zoom,
     return_network: bool = True,
-    use_distance: bool = False,
+    is_distance_based: bool = False,
 ):
     """
     Compute isochrone for a given start vertices
@@ -682,7 +707,7 @@ def compute_isochrone(
         len(unordered_map), edges_source, edges_target, edges_cost, edges_reverse_cost
     )
     start_vertices_ids = np.array([unordered_map[v] for v in start_vertices])
-    distances = dijkstra(start_vertices_ids, adj_list, travel_time, use_distance)
+    distances = dijkstra(start_vertices_ids, adj_list, travel_time, is_distance_based)
 
     # convert results to grid
     grid_data = network_to_grid(
@@ -697,6 +722,7 @@ def compute_isochrone(
         node_coords,
         speed,
         travel_time,
+        is_distance_based,
     )
 
     # Convert network to geojson
@@ -732,8 +758,8 @@ def compute_isochrone_h3(
     speed,
     centroid_x,
     centroid_y,
-    zoom: int = 10,
-    use_distance: bool = False,
+    zoom,
+    is_distance_based: bool = False,
 ):
     """
     Compute isochrone for a given start vertices
@@ -761,7 +787,7 @@ def compute_isochrone_h3(
         len(unordered_map), edges_source, edges_target, edges_cost, edges_reverse_cost
     )
     start_vertices_ids = np.array([unordered_map[v] for v in start_vertices])
-    distances = dijkstra(start_vertices_ids, adj_list, travel_time, use_distance)
+    distances = dijkstra(start_vertices_ids, adj_list, travel_time, is_distance_based)
 
     # convert results to grid
     grid_data = network_to_grid_h3(
@@ -778,6 +804,7 @@ def compute_isochrone_h3(
         travel_time,
         centroid_x,
         centroid_y,
+        is_distance_based,
     )
 
     return grid_data

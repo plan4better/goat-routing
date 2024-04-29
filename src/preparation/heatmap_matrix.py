@@ -4,13 +4,13 @@ import psycopg2
 
 from src.core.config import settings
 from src.preparation.heatmap_matrix_process import HeatmapMatrixProcess
-from src.schemas.catchment_area import RoutingActiveMobilityType
+from src.schemas.catchment_area import CatchmentAreaRoutingTypeActiveMobility
 
 
 class HeatmapMatrixPreparation:
     def __init__(self):
         # User configurable
-        self.ROUTING_TYPE = RoutingActiveMobilityType.walking
+        self.ROUTING_TYPE = CatchmentAreaRoutingTypeActiveMobility.walking
         self.NUM_THREADS = 20
 
     def get_cells_to_process(self, db_cursor):
@@ -47,6 +47,39 @@ class HeatmapMatrixPreparation:
 
         return chunks
 
+    def initialize_traveltime_matrix_table(self, db_cursor, db_connection):
+        """Create table to store traveltime matrix."""
+
+        # Drop table if it already exists
+        sql_drop_table = f"""
+            DROP TABLE IF EXISTS basic.traveltime_matrix_{self.ROUTING_TYPE.value};
+        """
+        db_cursor.execute(sql_drop_table)
+
+        # Create table
+        sql_create_table = f"""
+            CREATE TABLE basic.traveltime_matrix_{self.ROUTING_TYPE.value} (
+                orig_id h3index,
+                dest_id h3index[],
+                traveltime smallint,
+                h3_3 int,
+                PRIMARY KEY (orig_id, traveltime, h3_3)
+            );
+        """
+        db_cursor.execute(sql_create_table)
+
+        # Distribute table using CITUS
+        sql_distribute_table = f"""
+            SELECT create_distributed_table(
+                'basic.traveltime_matrix_{self.ROUTING_TYPE.value}',
+                'h3_3'
+            );
+        """
+        db_cursor.execute(sql_distribute_table)
+
+        # Commit changes
+        db_connection.commit()
+
     def process_chunk(self, chunk):
         HeatmapMatrixProcess(
             thread_id=chunk[0],
@@ -64,6 +97,9 @@ class HeatmapMatrixPreparation:
 
         # Split cells to process into NUM_THREADS chunks to be processed in parallel
         chunks = self.split_cells_into_chunks(cells_to_process)
+
+        # Initialize traveltime matrix table
+        self.initialize_traveltime_matrix_table(db_cursor, db_connection)
 
         # Close database connection
         db_connection.close()

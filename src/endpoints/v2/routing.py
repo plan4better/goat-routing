@@ -6,9 +6,10 @@ from redis import Redis
 
 from src.core.config import settings
 from src.core.worker import run_catchment_area
-from src.schemas.catchment_area import ICatchmentAreaActiveMobility
 from src.schemas.catchment_area import (
-    request_examples as active_mobility_request_examples,
+    ICatchmentAreaActiveMobility,
+    ICatchmentAreaCar,
+    request_examples,
 )
 from src.schemas.status import ProcessingStatus
 
@@ -21,19 +22,42 @@ redis = Redis(
 
 
 @router.post(
-    "/catchment-area",
+    "/active-mobility/catchment-area",
     summary="Compute catchment areas for active mobility",
 )
 async def compute_active_mobility_catchment_area(
     *,
     params: ICatchmentAreaActiveMobility = Body(
         ...,
-        examples=active_mobility_request_examples["catchment_area_active_mobility"],
+        examples=request_examples["catchment_area_active_mobility"],
         description="The catchment area parameters.",
     ),
 ):
     """Compute catchment areas for active mobility."""
 
+    return await compute_catchment_area(params)
+
+
+@router.post(
+    "/motorized-mobility/catchment-area",
+    summary="Compute catchment areas for motorized mobility",
+)
+async def compute_motorized_mobility_catchment_area(
+    *,
+    params: ICatchmentAreaCar = Body(
+        ...,
+        examples=request_examples["catchment_area_motorized_mobility"],
+        description="The catchment area parameters.",
+    ),
+):
+    """Compute catchment areas for motorized mobility."""
+
+    return await compute_catchment_area(params)
+
+
+async def compute_catchment_area(
+    params: ICatchmentAreaActiveMobility | ICatchmentAreaCar,
+):
     # Get processing status of catchment area request
     processing_status = redis.get(str(params.layer_id))
     processing_status = processing_status.decode("utf-8") if processing_status else None
