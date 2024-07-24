@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 from redis import Redis
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from tqdm import tqdm
 
@@ -42,13 +43,15 @@ class FetchRoutingNetwork:
         # Get network H3 cells
         h3_3_grid = []
         try:
-            sql_get_h3_3_grid = f"""
+            sql_get_h3_3_grid = text(
+                f"""
                 WITH region AS (
                     SELECT ST_Union(geom) AS geom FROM {settings.NETWORK_REGION_TABLE}
                 )
                 SELECT g.h3_short FROM region r,
                 LATERAL basic.fill_polygon_h3_3(r.geom) g;
             """
+            )
             result = (await self.db_connection.execute(sql_get_h3_3_grid)).fetchall()
             for h3_index in result:
                 h3_3_grid.append(h3_index[0])
@@ -143,7 +146,8 @@ class CRUDCatchmentArea:
         h3_3_cells = set()
         h3_6_cells = set()
 
-        sql_get_relevant_cells = f"""
+        sql_get_relevant_cells = text(
+            f"""
             WITH point AS (
                 SELECT geom FROM temporal.\"{input_table}\" LIMIT {num_points}
             ),
@@ -160,9 +164,10 @@ class CRUDCatchmentArea:
             FROM cells
             GROUP BY h3_3;
         """
-        for h3_3_cell in (
-            await self.db_connection.execute(sql_get_relevant_cells)
-        ).fetchall():
+        )
+        result = (await self.db_connection.execute(sql_get_relevant_cells)).fetchall()
+
+        for h3_3_cell in result:
             h3_3_cells.add(h3_3_cell[0])
             for h3_6_cell in h3_3_cell[1]:
                 h3_6_cells.add(h3_6_cell)
@@ -191,7 +196,8 @@ class CRUDCatchmentArea:
         origin_point_cell_index = []
         origin_point_h3_3 = []
         segments_to_discard = []
-        sql_get_artificial_segments = f"""
+        sql_get_artificial_segments = text(
+            f"""
             SELECT
                 point_id,
                 old_id,
@@ -207,6 +213,7 @@ class CRUDCatchmentArea:
                 10
             );
         """
+        )
         result = (
             await self.db_connection.execute(sql_get_artificial_segments)
         ).fetchall()  # TODO Check if artificial segments are even required for car routing
@@ -305,12 +312,14 @@ class CRUDCatchmentArea:
 
         # Create temporary table for storing catchment area starting points
         await self.db_connection.execute(
-            f"""
+            text(
+                f"""
                 CREATE TABLE temporal.\"{table_name}\" (
                     id serial PRIMARY KEY,
                     geom geometry(Point, 4326)
                 );
             """
+            )
         )
 
         # Insert catchment area starting points into the temporary table
@@ -322,10 +331,12 @@ class CRUDCatchmentArea:
                 f"(ST_SetSRID(ST_MakePoint({longitude}, {latitude}), 4326)),"
             )
         await self.db_connection.execute(
-            f"""
+            text(
+                f"""
                 INSERT INTO temporal.\"{table_name}\" (geom)
                 VALUES {insert_string.rstrip(",")};
             """
+            )
         )
 
         await self.db_connection.commit()
@@ -335,7 +346,7 @@ class CRUDCatchmentArea:
     async def delete_input_table(self, table_name: str):
         """Delete the input table after reading the relevant sub-network."""
 
-        await self.db_connection.execute(f'DROP TABLE temporal."{table_name}";')
+        await self.db_connection.execute(text(f'DROP TABLE temporal."{table_name}";'))
         await self.db_connection.commit()
 
     def compute_segment_cost(self, sub_network, mode, speed):
@@ -435,7 +446,8 @@ class CRUDCatchmentArea:
             buffer_dist = obj_in.travel_cost.max_distance
 
         # Fetch H3_10 cell grid relevant to the catchment area calculation
-        sql_get_relevant_cells = f"""
+        sql_get_relevant_cells = text(
+            f"""
             WITH cells AS (
                 SELECT DISTINCT(h3_grid_disk(sub.origin_h3_index, radius.value)) AS h3_index
                 FROM (SELECT UNNEST(ARRAY{origin_h3_10}::h3index[]) AS origin_h3_index) sub,
@@ -448,6 +460,7 @@ class CRUDCatchmentArea:
                 FROM h3_cell_to_lat_lng(h3_index) AS point
             ) sub;
         """
+        )
         result = (await db_connection.execute(sql_get_relevant_cells)).fetchall()
 
         h3_index = []
@@ -474,7 +487,8 @@ class CRUDCatchmentArea:
                 insert_string += f"SELECT ST_SetSRID(ST_GeomFromText('{geom}'), 4326) AS geom, {minute} AS minute UNION ALL "
             insert_string, _, _ = insert_string.rpartition(" UNION ALL ")
 
-            sql_insert_into_table = f"""
+            sql_insert_into_table = text(
+                f"""
                 WITH isochrones AS
                 (
                     SELECT p."minute", (ST_DUMP(p.geom)).geom
@@ -505,6 +519,7 @@ class CRUDCatchmentArea:
                 ) j ON {"TRUE" if obj_in.polygon_difference else "FALSE"}
                 ORDER BY a.MINUTE DESC;
             """
+            )
 
             await self.db_connection.execute(sql_insert_into_table)
             await self.db_connection.commit()
@@ -524,10 +539,12 @@ class CRUDCatchmentArea:
                     {cost}
                 ),"""
                 if i % batch_size == 0 or i == (len(network["features"]) - 1):
-                    insert_string = f"""
+                    insert_string = text(
+                        f"""
                         INSERT INTO {obj_in.result_table} (layer_id, geom, float_attr1)
                         VALUES {insert_string.rstrip(",")};
                     """
+                    )
                     await self.db_connection.execute(insert_string)
                     await self.db_connection.commit()
                     insert_string = ""
@@ -544,18 +561,22 @@ class CRUDCatchmentArea:
                     {grid[i]}
                 ),"""
                 if i % batch_size == 0 or i == (len(grid_index) - 1):
-                    insert_string = f"""
+                    insert_string = text(
+                        f"""
                         INSERT INTO {obj_in.result_table} (layer_id, text_attr1, integer_attr1)
                         VALUES {insert_string.rstrip(",")};
                     """
+                    )
                     await self.db_connection.execute(insert_string)
                     await self.db_connection.commit()
                     insert_string = ""
-            sql_update_geom = f"""
+            sql_update_geom = text(
+                f"""
                 UPDATE {obj_in.result_table}
                 SET geom = ST_SetSRID(h3_cell_to_boundary(text_attr1::h3index)::geometry, 4326)
                 WHERE layer_id = '{obj_in.layer_id}';
             """
+            )
             await self.db_connection.execute(sql_update_geom)
             await self.db_connection.commit()
 
