@@ -40,6 +40,38 @@ class FetchRoutingNetwork:
 
         start_time = time.time()
 
+        # Get edge network table
+        edge_network_table = None
+        try:
+            layer_id = str(
+                (
+                    await self.db_connection.execute(
+                        text(
+                            f"""SELECT layer_id
+                        FROM customer.layer_project
+                        WHERE id = {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID};"""
+                        )
+                    )
+                ).fetchall()[0][0]
+            )
+            user_id = str(
+                (
+                    await self.db_connection.execute(
+                        text(
+                            f"""SELECT user_id
+                        FROM customer.layer
+                        WHERE id = '{layer_id}';"""
+                        )
+                    )
+                ).fetchall()[0][0]
+            )
+            edge_network_table = (
+                f"user_data.street_network_line_{user_id.replace('-', '')}"
+            )
+        except Exception as e:
+            print(e)
+            return
+
         # Get network H3 cells
         h3_3_grid = []
         try:
@@ -79,10 +111,10 @@ class FetchRoutingNetwork:
                     segments_df[h3_index] = pl.read_database_uri(
                         query=f"""
                             SELECT
-                                id, length_m, length_3857, class_, impedance_slope, impedance_slope_reverse,
+                                edge_id AS id, length_m, length_3857, class_, impedance_slope, impedance_slope_reverse,
                                 impedance_surface, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
                                 maxspeed_forward, maxspeed_backward, source, target, h3_3, h3_6
-                            FROM basic.segment
+                            FROM {edge_network_table}
                             WHERE h3_3 = {h3_index}
                         """,
                         uri=settings.POSTGRES_DATABASE_URI,
@@ -207,6 +239,7 @@ class CRUDCatchmentArea:
                 maxspeed_forward, maxspeed_backward, source, target,
                 h3_3, h3_6, point_cell_index, point_h3_3
             FROM basic.get_artificial_segments(
+                {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID},
                 '{input_table}',
                 {num_points},
                 '{",".join(valid_segment_classes)}',
@@ -253,10 +286,60 @@ class CRUDCatchmentArea:
                 "Starting point(s) are disconnected from the street network."
             )
 
-        # Remove segments which are now replaced by artificial segments
-        sub_network = sub_network.filter(~pl.col("id").is_in(segments_to_discard))
+        # Process network modifications according to the specified scenario
+        scenario_id = (
+            f"'{obj_in.scenario_id}'" if obj_in.scenario_id is not None else "NULL"
+        )
+        sql_get_network_modifications = text(
+            f"""
+            SELECT r_edit_type, r_id, r_class_, r_source, r_target,
+                r_length_m, r_length_3857, CAST(r_coordinates_3857 AS TEXT) AS coordinates_3857,
+                r_impedance_slope, r_impedance_slope_reverse, r_impedance_surface, r_maxspeed_forward,
+                r_maxspeed_backward, r_h3_6, r_h3_3
+            FROM basic.get_network_modifications(
+                {scenario_id},
+                {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID},
+                {settings.STREET_NETWORK_NODE_DEFAULT_LAYER_PROJECT_ID}
+            );
+        """
+        )
+        result = (
+            await self.db_connection.execute(sql_get_network_modifications)
+        ).fetchall()
 
-        # TODO: We need to read the scenario network dynamically from DB if a scenario is selected.
+        for modification in result:
+            if modification[0] == "d":
+                segments_to_discard.append(modification[1])
+                continue
+
+            new_segment = pl.DataFrame(
+                [
+                    {
+                        "id": modification[1],
+                        "length_m": modification[5],
+                        "length_3857": modification[6],
+                        "class_": modification[2],
+                        "impedance_slope": modification[8],
+                        "impedance_slope_reverse": modification[9],
+                        "impedance_surface": modification[10],
+                        "coordinates_3857": modification[7],
+                        "maxspeed_forward": modification[11],
+                        "maxspeed_backward": modification[12],
+                        "source": modification[3],
+                        "target": modification[4],
+                        "h3_3": modification[13],
+                        "h3_6": modification[14],
+                    }
+                ],
+                schema_overrides=SEGMENT_DATA_SCHEMA,
+            )
+            new_segment = new_segment.with_columns(
+                pl.col("coordinates_3857").str.json_extract()
+            )
+            sub_network.extend(new_segment)
+
+        # Remove segments which are replaced by artificial segments or modified due to the scenario
+        sub_network = sub_network.filter(~pl.col("id").is_in(segments_to_discard))
 
         # Replace all NULL values in the impedance columns with 0
         sub_network = sub_network.with_columns(pl.col("impedance_surface").fill_null(0))

@@ -1,48 +1,54 @@
 DROP TYPE IF EXISTS basic.origin_segment;
 CREATE TYPE basic.origin_segment AS (
-    id int, class_ text, impedance_slope float8, impedance_slope_reverse float8,
-    impedance_surface float8, maxspeed_forward int, maxspeed_backward int, source int,
-    target int, geom geometry, h3_3 int2, h3_6 int4, fraction float[], fraction_geom geometry[],
-    point_id int2[], point_geom geometry[]
+    id INT, class_ TEXT, impedance_slope FLOAT8, impedance_slope_reverse FLOAT8,
+    impedance_surface FLOAT8, maxspeed_forward INT, maxspeed_backward INT, source INT,
+    target INT, geom GEOMETRY, h3_3 INT2, h3_6 INT, fraction FLOAT[], fraction_geom GEOMETRY[],
+    point_id INT2[], point_geom GEOMETRY[]
 );
 
 
 DROP TYPE IF EXISTS basic.artificial_segment CASCADE;
 CREATE TYPE basic.artificial_segment AS (
-    point_id int2, point_geom geometry, point_cell_index h3index, point_h3_3 int, old_id int,
-    id int, length_m float, length_3857 float, class_ text, impedance_slope float8,
-    impedance_slope_reverse float8, impedance_surface float8, coordinates_3857 jsonb,
-    maxspeed_forward int, maxspeed_backward int, source int, target int, geom geometry,
-    h3_3 int2, h3_6 int4
+    point_id INT2, point_geom GEOMETRY, point_cell_index H3INDEX, point_h3_3 INT, old_id INT,
+    id INT, length_m FLOAT, length_3857 FLOAT, class_ TEXT, impedance_slope FLOAT8,
+    impedance_slope_reverse FLOAT8, impedance_surface FLOAT8, coordinates_3857 JSONB,
+    maxspeed_forward INT, maxspeed_backward INT, source INT, target INT, geom GEOMETRY,
+    h3_3 INT2, h3_6 INT
 );
 
 
 DROP FUNCTION IF EXISTS basic.get_artificial_segments;
 CREATE OR REPLACE FUNCTION basic.get_artificial_segments(
-    input_table text,
-    num_points integer,
-    classes text,
-    point_cell_resolution int
+    edge_layer_project_id INT,
+    input_table TEXT,
+    num_points INT,
+    classes TEXT,
+    point_cell_resolution INT
 )
 RETURNS SETOF basic.artificial_segment
 LANGUAGE plpgsql
 AS $function$
 DECLARE
+    edge_layer_id UUID := (SELECT layer_id FROM customer.layer_project WHERE id = edge_layer_project_id);
+	edge_network_table TEXT := 'user_data.street_network_line_' || REPLACE((
+		SELECT user_id FROM customer.layer WHERE id = edge_layer_id
+	)::TEXT, '-', '');
+
     custom_cursor REFCURSOR;
 	origin_segment basic.origin_segment;
 	artificial_segment basic.artificial_segment;
 
     -- Increment everytime a new artificial segment is created
-    artificial_seg_index int = 1000000000; -- Defaults to 1 billion
+    artificial_seg_index INT = 1000000000; -- Defaults to 1 billion
 
     -- Increment everytime a new artificial connector/node is created
-    artificial_con_index int = 1000000000; -- Defaults to 1 billion
+    artificial_con_index INT = 1000000000; -- Defaults to 1 billion
 
     -- Increment everytime a new artificial origin node is created (for isochrone starting points)
-    artifical_origin_index int = 2000000000; -- Defaults to 2 billion
+    artifical_origin_index INT = 2000000000; -- Defaults to 2 billion
 
-    fraction float;
-    new_geom geometry;
+    fraction FLOAT;
+    new_geom GEOMETRY;
 BEGIN
     
 	OPEN custom_cursor FOR EXECUTE
@@ -50,7 +56,7 @@ BEGIN
             'WITH origin AS  (
                 SELECT
                     id, geom,
-                    ST_SETSRID(ST_Buffer(geom::geography, 100)::geometry, 4326) AS buffer_geom,
+                    ST_SETSRID(ST_Buffer(geom::geography, 100)::GEOMETRY, 4326) AS buffer_geom,
                     basic.to_short_h3_3(h3_lat_lng_to_cell(ST_Centroid(geom)::point, 3)::bigint) AS h3_3
                 FROM temporal."%s"
                 LIMIT %s::int
@@ -58,12 +64,12 @@ BEGIN
             best_segment AS (
                 SELECT DISTINCT ON (o.id)
                     o.id AS point_id, o.geom AS point_geom, o.buffer_geom AS point_buffer,
-                    s.id, s.class_, s.impedance_slope, s.impedance_slope_reverse,
+                    s.edge_id AS id, s.class_, s.impedance_slope, s.impedance_slope_reverse,
                     s.impedance_surface, s.maxspeed_forward, s.maxspeed_backward,
                     s."source", s.target, s.geom, s.h3_3, s.h3_6,
                     ST_LineLocatePoint(s.geom, o.geom) AS fraction,
                     ST_ClosestPoint(s.geom, o.geom) AS fraction_geom
-                FROM basic.segment s, origin o
+                FROM %s s, origin o
                 WHERE
                 s.h3_3 = o.h3_3
                 AND s.class_ = ANY(string_to_array(''%s'', '',''))
@@ -84,7 +90,7 @@ BEGIN
                 bs.id, bs.class_, bs.impedance_slope, bs.impedance_slope_reverse,
                 bs.impedance_surface, bs.maxspeed_forward, bs.maxspeed_backward,
                 bs."source", bs.target, bs.geom, bs.h3_3, bs.h3_6;'
-        , input_table, num_points, classes);
+        , input_table, num_points, edge_network_table, classes);
 	
 	LOOP
 		FETCH custom_cursor INTO origin_segment;
