@@ -567,7 +567,7 @@ class CRUDCatchmentArea:
             for i in shapes.index:
                 geom = shapes["geometry"][i]
                 minute = shapes["minute"][i]
-                insert_string += f"SELECT ST_SetSRID(ST_GeomFromText('{geom}'), 4326) AS geom, {minute} AS minute UNION ALL "
+                insert_string += f"SELECT ST_MakeValid(ST_SetSRID(ST_GeomFromText('{geom}'), 4326)) AS geom, {minute} AS minute UNION ALL "
             insert_string, _, _ = insert_string.rpartition(" UNION ALL ")
 
             sql_insert_into_table = text(
