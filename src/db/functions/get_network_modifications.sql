@@ -1,27 +1,11 @@
-DROP FUNCTION IF EXISTS basic.get_network_modifications;
-CREATE OR REPLACE FUNCTION basic.get_network_modifications(
+DROP FUNCTION IF EXISTS basic.produce_network_modifications;
+CREATE OR REPLACE FUNCTION basic.produce_network_modifications(
 	scenario_id_input UUID,
 	edge_layer_project_id INTEGER,
-	node_layer_project_id INTEGER
+	node_layer_project_id INTEGER,
+	network_modifications_table TEXT
 )
-RETURNS TABLE (
-	r_edit_type TEXT,
-	r_id INTEGER,
-	r_class_ TEXT,
-	r_source INTEGER,
-	r_target INTEGER,
-	r_length_m FLOAT8,
-	r_length_3857 FLOAT8,
-	r_coordinates_3857 JSONB,
-	r_impedance_slope FLOAT8,
-	r_impedance_slope_reverse FLOAT8,
-	r_impedance_surface FLOAT8,
-	r_maxspeed_forward INTEGER,
-	r_maxspeed_backward INTEGER,
-	r_geom GEOMETRY(LINESTRING, 4326),
-	r_h3_6 INTEGER,
-	r_h3_3 INTEGER
-)
+RETURNS void
 LANGUAGE plpgsql
 AS $function$
 DECLARE
@@ -46,6 +30,19 @@ BEGIN
 	--Proceed only if the scenario contains features which apply to the specified edge layer
 	---------------------------------------------------------------------------------------------------------------------
 
+	-- Create network modifications table
+	EXECUTE FORMAT('
+		DROP TABLE IF EXISTS %I;
+		CREATE TABLE %I (
+			edit_type TEXT, id INTEGER, class_ TEXT, source INTEGER,
+			target INTEGER, length_m FLOAT8, length_3857 FLOAT8,
+			coordinates_3857 JSONB, impedance_slope FLOAT8,
+			impedance_slope_reverse FLOAT8, impedance_surface FLOAT8,
+			maxspeed_forward INTEGER, maxspeed_backward INTEGER,
+			geom GEOMETRY(LINESTRING, 4326), h3_6 INTEGER, h3_3 INTEGER
+		);
+	', network_modifications_table, network_modifications_table);
+	
 	IF NOT EXISTS (
 		SELECT 1
 		FROM customer.scenario_scenario_feature ssf
@@ -565,29 +562,9 @@ BEGIN
 	--PRODUCE FINAL LIST OF NETWORK MODIFICATIONS (SIMPLIFIED INTO ADDITIONS AND DELETIONS)
 	----------------------------------------------------------------------------------------------------------------------
 
-	DROP TABLE IF EXISTS network_modifications;
-	CREATE TEMP TABLE network_modifications (
-		edit_type TEXT,
-		id INTEGER,
-		class_ TEXT,
-		source INTEGER,
-		target INTEGER,
-		length_m FLOAT8,
-		length_3857 FLOAT8,
-		coordinates_3857 JSONB,
-		impedance_slope FLOAT8,
-		impedance_slope_reverse FLOAT8,
-		impedance_surface FLOAT8,
-		maxspeed_forward INTEGER,
-		maxspeed_backward INTEGER,
-		geom GEOMETRY(LINESTRING, 4326),
-		h3_6 INTEGER,
-		h3_3 INTEGER
-	);
-
 	-- Edges to be explicitly deleted according to the scenario
 	EXECUTE FORMAT('
-		INSERT INTO network_modifications (edit_type, id, h3_6, h3_3)
+		INSERT INTO %I (edit_type, id, h3_6, h3_3)
 		SELECT ''d'' AS edit_type, e.edge_id AS id, e.h3_6, e.h3_3
 		FROM %s e, (
 			SELECT sf.*
@@ -599,22 +576,34 @@ BEGIN
 		) w
 		WHERE e.h3_3 = w.h3_3
 		AND e.id = w.feature_id;
-	', edge_network_table, scenario_id_input, edge_layer_project_id);
+	', network_modifications_table, edge_network_table, scenario_id_input, edge_layer_project_id);
 
 	-- Existing edges to be deleted due to a modified or new edge replacing it
-	INSERT INTO network_modifications (edit_type, id, h3_6, h3_3)
-	SELECT 'd' AS edit_type, original_id AS id, h3_6, h3_3
-	FROM existing_network
-	UNION
-	SELECT 'd' AS edit_type, original_id AS id, h3_6, h3_3
-	FROM new_network
-	WHERE original_id IS NOT NULL;
+	EXECUTE FORMAT('
+		INSERT INTO %I (edit_type, id, h3_6, h3_3)
+		SELECT ''d'' AS edit_type, original_id AS id, h3_6, h3_3
+		FROM existing_network
+		UNION
+		SELECT ''d'' AS edit_type, original_id AS id, h3_6, h3_3
+		FROM new_network
+		WHERE original_id IS NOT NULL;
+	', network_modifications_table);
+
+	-- Create temp table to store all new edges before copying them into the final network modifications table
+	DROP TABLE IF EXISTS new_edges;
+	EXECUTE FORMAT('
+		CREATE TEMP TABLE new_edges AS
+		SELECT * FROM %I LIMIT 0;
+	', network_modifications_table);
 
 	-- Modified edges to be added to the network
-	FOR rec IN SELECT * FROM existing_network
+	FOR rec IN SELECT e.* 
+				FROM existing_network e
+				LEFT JOIN new_network n ON e.original_id = n.original_id
+				WHERE n.original_id IS NULL
 	LOOP
-		INSERT INTO network_modifications
-		SELECT 'n', max_edge_id + max_edge_id_increment AS id, rec.class_, rec.source, rec.target, 
+		INSERT INTO new_edges
+		SELECT 'n' AS edit_type, max_edge_id + max_edge_id_increment AS id, rec.class_, rec.source, rec.target, 
 			ST_Length(rec.geom::geography) AS length_m, ST_Length(ST_Transform(rec.geom, 3857)) AS length_3857, 
 			ST_AsGeoJSON(ST_Transform(rec.geom, 3857))::JSONB->'coordinates' AS coordinates_3857, 
 			rec.impedance_slope, rec.impedance_slope_reverse, rec.impedance_surface, 
@@ -626,8 +615,8 @@ BEGIN
 	-- TODO: Compute slope impedances
 	FOR rec IN SELECT * FROM new_network
 	LOOP
-		INSERT INTO network_modifications
-		SELECT 'n', max_edge_id + max_edge_id_increment AS id, rec.class_, rec.source, rec.target, 
+		INSERT INTO new_edges
+		SELECT 'n' as edit_type, max_edge_id + max_edge_id_increment AS id, rec.class_, rec.source, rec.target, 
 			ST_Length(rec.geom::geography) AS length_m, ST_Length(ST_Transform(rec.geom, 3857)) AS length_3857, 
 			ST_AsGeoJSON(ST_Transform(rec.geom, 3857))::JSONB->'coordinates' AS coordinates_3857, 
 			NULL AS impedance_slope, NULL AS impedance_slope_reverse, rec.impedance_surface, 
@@ -637,8 +626,11 @@ BEGIN
 		max_edge_id_increment := max_edge_id_increment + 1;
 	END LOOP;
 
-	RETURN QUERY
-	SELECT * FROM network_modifications;
+	-- Copy new edges into the final network modifications table
+	EXECUTE FORMAT('
+		INSERT INTO %I
+		SELECT * FROM new_edges;
+	', network_modifications_table);
 
 END
 $function$;

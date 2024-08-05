@@ -181,7 +181,7 @@ class CRUDCatchmentArea:
         sql_get_relevant_cells = text(
             f"""
             WITH point AS (
-                SELECT geom FROM temporal.\"{input_table}\" LIMIT {num_points}
+                SELECT geom FROM "{input_table}" LIMIT {num_points}
             ),
             buffer AS (
                 SELECT ST_Buffer(point.geom::geography, {buffer_dist})::geometry AS geom
@@ -223,6 +223,74 @@ class CRUDCatchmentArea:
             else:
                 sub_network = sub_df
 
+        # Produce all network modifications required to apply the specified scenario
+        network_modifications_table = f"temporal.{str(uuid.uuid4()).replace('-', '_')}"
+        print(network_modifications_table)
+        scenario_id = (
+            f"'{obj_in.scenario_id}'" if obj_in.scenario_id is not None else "NULL"
+        )
+        await self.db_connection.execute(
+            text(
+                f"""
+                SELECT basic.produce_network_modifications(
+                    {scenario_id},
+                    {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID},
+                    {settings.STREET_NETWORK_NODE_DEFAULT_LAYER_PROJECT_ID},
+                    '{network_modifications_table}'
+                );
+            """
+            )
+        )
+
+        # Apply network modifications to the sub-network
+        segments_to_discard = []
+        sql_get_network_modifications = text(
+            f"""
+            SELECT edit_type, id, class_, source, target,
+                length_m, length_3857, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
+                impedance_slope, impedance_slope_reverse, impedance_surface, maxspeed_forward,
+                maxspeed_backward, h3_6, h3_3
+            FROM "{network_modifications_table}";
+        """
+        )
+        result = (
+            await self.db_connection.execute(sql_get_network_modifications)
+        ).fetchall()
+
+        for modification in result:
+            if modification[0] == "d":
+                segments_to_discard.append(modification[1])
+                continue
+
+            new_segment = pl.DataFrame(
+                [
+                    {
+                        "id": modification[1],
+                        "length_m": modification[5],
+                        "length_3857": modification[6],
+                        "class_": modification[2],
+                        "impedance_slope": modification[8],
+                        "impedance_slope_reverse": modification[9],
+                        "impedance_surface": modification[10],
+                        "coordinates_3857": modification[7],
+                        "maxspeed_forward": modification[11],
+                        "maxspeed_backward": modification[12],
+                        "source": modification[3],
+                        "target": modification[4],
+                        "h3_3": modification[13],
+                        "h3_6": modification[14],
+                    }
+                ],
+                schema_overrides=SEGMENT_DATA_SCHEMA,
+            )
+            new_segment = new_segment.with_columns(
+                pl.col("coordinates_3857").str.json_extract()
+            )
+            sub_network.extend(new_segment)
+
+        # Remove segments which are deleted or modified due to the scenario
+        sub_network = sub_network.filter(~pl.col("id").is_in(segments_to_discard))
+
         # Create necessary artifical segments and add them to our sub network
         origin_point_connectors = []
         origin_point_cell_index = []
@@ -240,6 +308,7 @@ class CRUDCatchmentArea:
                 h3_3, h3_6, point_cell_index, point_h3_3
             FROM basic.get_artificial_segments(
                 {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID},
+                '{network_modifications_table}',
                 '{input_table}',
                 {num_points},
                 '{",".join(valid_segment_classes)}',
@@ -286,58 +355,6 @@ class CRUDCatchmentArea:
                 "Starting point(s) are disconnected from the street network."
             )
 
-        # Process network modifications according to the specified scenario
-        scenario_id = (
-            f"'{obj_in.scenario_id}'" if obj_in.scenario_id is not None else "NULL"
-        )
-        sql_get_network_modifications = text(
-            f"""
-            SELECT r_edit_type, r_id, r_class_, r_source, r_target,
-                r_length_m, r_length_3857, CAST(r_coordinates_3857 AS TEXT) AS coordinates_3857,
-                r_impedance_slope, r_impedance_slope_reverse, r_impedance_surface, r_maxspeed_forward,
-                r_maxspeed_backward, r_h3_6, r_h3_3
-            FROM basic.get_network_modifications(
-                {scenario_id},
-                {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID},
-                {settings.STREET_NETWORK_NODE_DEFAULT_LAYER_PROJECT_ID}
-            );
-        """
-        )
-        result = (
-            await self.db_connection.execute(sql_get_network_modifications)
-        ).fetchall()
-
-        for modification in result:
-            if modification[0] == "d":
-                segments_to_discard.append(modification[1])
-                continue
-
-            new_segment = pl.DataFrame(
-                [
-                    {
-                        "id": modification[1],
-                        "length_m": modification[5],
-                        "length_3857": modification[6],
-                        "class_": modification[2],
-                        "impedance_slope": modification[8],
-                        "impedance_slope_reverse": modification[9],
-                        "impedance_surface": modification[10],
-                        "coordinates_3857": modification[7],
-                        "maxspeed_forward": modification[11],
-                        "maxspeed_backward": modification[12],
-                        "source": modification[3],
-                        "target": modification[4],
-                        "h3_3": modification[13],
-                        "h3_6": modification[14],
-                    }
-                ],
-                schema_overrides=SEGMENT_DATA_SCHEMA,
-            )
-            new_segment = new_segment.with_columns(
-                pl.col("coordinates_3857").str.json_extract()
-            )
-            sub_network.extend(new_segment)
-
         # Remove segments which are replaced by artificial segments or modified due to the scenario
         sub_network = sub_network.filter(~pl.col("id").is_in(segments_to_discard))
 
@@ -382,6 +399,7 @@ class CRUDCatchmentArea:
 
         return (
             sub_network,
+            network_modifications_table,
             origin_point_connectors,
             origin_point_cell_index,
             origin_point_h3_3,
@@ -391,13 +409,13 @@ class CRUDCatchmentArea:
         """Create the input table for the catchment area calculation."""
 
         # Generate random table name
-        table_name = str(uuid.uuid4()).replace("-", "_")
+        table_name = f"temporal.{str(uuid.uuid4()).replace('-', '_')}"
 
         # Create temporary table for storing catchment area starting points
         await self.db_connection.execute(
             text(
                 f"""
-                CREATE TABLE temporal.\"{table_name}\" (
+                CREATE TABLE "{table_name}" (
                     id serial PRIMARY KEY,
                     geom geometry(Point, 4326)
                 );
@@ -416,7 +434,7 @@ class CRUDCatchmentArea:
         await self.db_connection.execute(
             text(
                 f"""
-                INSERT INTO temporal.\"{table_name}\" (geom)
+                INSERT INTO "{table_name}" (geom)
                 VALUES {insert_string.rstrip(",")};
             """
             )
@@ -426,10 +444,19 @@ class CRUDCatchmentArea:
 
         return table_name, len(obj_in.starting_points.latitude)
 
-    async def delete_input_table(self, table_name: str):
-        """Delete the input table after reading the relevant sub-network."""
+    async def drop_temp_tables(
+        self, input_table: str, network_modifications_table: str
+    ):
+        """Delete the temporary input and network modifications tables."""
 
-        await self.db_connection.execute(text(f'DROP TABLE temporal."{table_name}";'))
+        await self.db_connection.execute(
+            text(
+                f"""
+            DROP TABLE "{input_table}";
+            DROP TABLE "{network_modifications_table}";
+        """
+            )
+        )
         await self.db_connection.commit()
 
     def compute_segment_cost(self, sub_network, mode, speed):
@@ -687,17 +714,21 @@ class CRUDCatchmentArea:
             input_table, num_points = await self.create_input_table(obj_in)
 
             # Read & process routing network to extract relevant sub-network
-            sub_routing_network, origin_connector_ids, origin_point_h3_10, _ = (
-                await self.read_network(
-                    routing_network,
-                    obj_in,
-                    input_table,
-                    num_points,
-                )
+            (
+                sub_routing_network,
+                network_modifications_table,
+                origin_connector_ids,
+                origin_point_h3_10,
+                _,
+            ) = await self.read_network(
+                routing_network,
+                obj_in,
+                input_table,
+                num_points,
             )
 
             # Delete input table for catchment area origin points
-            await self.delete_input_table(input_table)
+            await self.drop_temp_tables(input_table, network_modifications_table)
         except Exception as e:
             self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             await self.db_connection.rollback()

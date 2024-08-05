@@ -20,8 +20,9 @@ CREATE TYPE basic.artificial_segment AS (
 DROP FUNCTION IF EXISTS basic.get_artificial_segments;
 CREATE OR REPLACE FUNCTION basic.get_artificial_segments(
     edge_layer_project_id INT,
-    input_table TEXT,
-    num_points INT,
+    network_modifications_table TEXT,
+    origin_points_table TEXT,
+    num_origin_points INT,
     classes TEXT,
     point_cell_resolution INT
 )
@@ -58,22 +59,42 @@ BEGIN
                     id, geom,
                     ST_SETSRID(ST_Buffer(geom::geography, 100)::GEOMETRY, 4326) AS buffer_geom,
                     basic.to_short_h3_3(h3_lat_lng_to_cell(ST_Centroid(geom)::point, 3)::bigint) AS h3_3
-                FROM temporal."%s"
+                FROM %I
                 LIMIT %s::int
+            ),
+            modified_network AS (
+                	SELECT original_features.*
+                    FROM (
+                        SELECT s.edge_id AS id, s.class_, s.source, s.target, s.length_m, s.length_3857,
+                            s.coordinates_3857, s.impedance_slope, s.impedance_slope_reverse,
+                            s.impedance_surface, s.maxspeed_forward, s.maxspeed_backward, s.geom,
+                            s.h3_6, s.h3_3
+                        FROM %s s,
+                            origin o
+                        WHERE s.class_ = ANY(string_to_array(''%s'', '',''))
+                        AND ST_Intersects(s.geom, o.buffer_geom)
+                    ) original_features
+                    LEFT JOIN %I scenario_features ON original_features.id = scenario_features.id
+                    WHERE scenario_features.id IS NULL
+                UNION ALL
+                    SELECT id, class_, source, target, length_m, length_3857,
+                        coordinates_3857::json, impedance_slope, impedance_slope_reverse,
+                        impedance_surface, maxspeed_forward, maxspeed_backward, geom,
+                        h3_6, h3_3
+                    FROM %I scenario_features
+                    WHERE edit_type = ''n''
+                    AND class_ = ANY(string_to_array(''%s'', '',''))
             ),
             best_segment AS (
                 SELECT DISTINCT ON (o.id)
                     o.id AS point_id, o.geom AS point_geom, o.buffer_geom AS point_buffer,
-                    s.edge_id AS id, s.class_, s.impedance_slope, s.impedance_slope_reverse,
+                    s.id, s.class_, s.impedance_slope, s.impedance_slope_reverse,
                     s.impedance_surface, s.maxspeed_forward, s.maxspeed_backward,
                     s."source", s.target, s.geom, s.h3_3, s.h3_6,
                     ST_LineLocatePoint(s.geom, o.geom) AS fraction,
                     ST_ClosestPoint(s.geom, o.geom) AS fraction_geom
-                FROM %s s, origin o
-                WHERE
-                s.h3_3 = o.h3_3
-                AND s.class_ = ANY(string_to_array(''%s'', '',''))
-                AND ST_Intersects(s.geom, o.buffer_geom)
+                FROM modified_network s, origin o
+                WHERE ST_Intersects(s.geom, o.buffer_geom)
                 ORDER BY o.id, ST_ClosestPoint(s.geom, o.geom) <-> o.geom
             )
             SELECT
@@ -90,7 +111,8 @@ BEGIN
                 bs.id, bs.class_, bs.impedance_slope, bs.impedance_slope_reverse,
                 bs.impedance_surface, bs.maxspeed_forward, bs.maxspeed_backward,
                 bs."source", bs.target, bs.geom, bs.h3_3, bs.h3_6;'
-        , input_table, num_points, edge_network_table, classes);
+        , origin_points_table, num_origin_points, edge_network_table, classes,
+        network_modifications_table, network_modifications_table, classes);
 	
 	LOOP
 		FETCH custom_cursor INTO origin_segment;
