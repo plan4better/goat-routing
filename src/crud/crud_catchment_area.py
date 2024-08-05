@@ -225,7 +225,6 @@ class CRUDCatchmentArea:
 
         # Produce all network modifications required to apply the specified scenario
         network_modifications_table = f"temporal.{str(uuid.uuid4()).replace('-', '_')}"
-        print(network_modifications_table)
         scenario_id = (
             f"'{obj_in.scenario_id}'" if obj_in.scenario_id is not None else "NULL"
         )
@@ -449,13 +448,9 @@ class CRUDCatchmentArea:
     ):
         """Delete the temporary input and network modifications tables."""
 
+        await self.db_connection.execute(text(f'DROP TABLE "{input_table}";'))
         await self.db_connection.execute(
-            text(
-                f"""
-            DROP TABLE "{input_table}";
-            DROP TABLE "{network_modifications_table}";
-        """
-            )
+            text(f'DROP TABLE "{network_modifications_table}";')
         )
         await self.db_connection.commit()
 
@@ -608,10 +603,11 @@ class CRUDCatchmentArea:
                 ),
                 isochrones_filled AS
                 (
-                    SELECT "minute", ST_COLLECT(ST_MAKEPOLYGON(st_exteriorring(geom))) geom
-                    FROM isochrones
+                    SELECT "minute", ST_COLLECT(ST_MAKEPOLYGON(ST_ExteriorRing(geom))) AS orig_geom, ST_COLLECT(filled) AS filled_geom
+                    FROM isochrones,
+                    LATERAL basic.fill_polygon_holes(geom, {settings.CATCHMENT_AREA_HOLE_THRESHOLD_SQM}) filled
                     GROUP BY "minute"
-                    ORDER BY "minute"
+                    ORDER BY "minute" DESC
                 ),
                 isochrones_with_id AS
                 (
@@ -619,15 +615,14 @@ class CRUDCatchmentArea:
                     FROM isochrones_filled
                 )
                 INSERT INTO {obj_in.result_table} (layer_id, geom, integer_attr1)
-                SELECT '{obj_in.layer_id}', ST_MakeValid(COALESCE(j.geom, a.geom)) AS geom, a.MINUTE
+                SELECT '{obj_in.layer_id}', ST_MakeValid(COALESCE(j.geom, a.filled_geom)) AS geom, a."minute"
                 FROM isochrones_with_id a
                 LEFT JOIN LATERAL
                 (
-                    SELECT ST_DIFFERENCE(a.geom, b.geom) AS geom
+                    SELECT ST_DIFFERENCE(a.filled_geom, b.orig_geom) AS geom
                     FROM isochrones_with_id b
-                    WHERE a.id - 1 = b.id
-                ) j ON {"TRUE" if obj_in.polygon_difference else "FALSE"}
-                ORDER BY a.MINUTE DESC;
+                    WHERE a.id + 1 = b.id
+                ) j ON {"TRUE" if obj_in.polygon_difference else "FALSE"};
             """
             )
 

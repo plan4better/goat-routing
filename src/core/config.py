@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     NETWORK_REGION_TABLE = "basic.geofence_active_mobility"
 
     CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED = 80  # km/h
+    CATCHMENT_AREA_HOLE_THRESHOLD_SQM = 10000  # 100m x 100m
 
     CELERY_BROKER_URL: Optional[str] = "pyamqp://guest@rabbitmq//"
     REDIS_HOST: Optional[str] = "redis"
