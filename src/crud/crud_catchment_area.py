@@ -1,5 +1,4 @@
 import math
-import os
 import time
 import uuid
 from typing import Any
@@ -9,11 +8,11 @@ import polars as pl
 from redis import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from tqdm import tqdm
 
 from src.core.config import settings
 from src.core.isochrone import compute_isochrone, compute_isochrone_h3
 from src.core.jsoline import generate_jsolines
+from src.core.street_network.street_network_util import StreetNetworkUtil
 from src.schemas.catchment_area import (
     SEGMENT_DATA_SCHEMA,
     VALID_BICYCLE_CLASSES,
@@ -28,113 +27,6 @@ from src.schemas.catchment_area import (
 )
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.schemas.status import ProcessingStatus
-from src.utils import make_dir
-
-
-class FetchRoutingNetwork:
-    def __init__(self, db_connection: AsyncSession):
-        self.db_connection = db_connection
-
-    async def fetch(self):
-        """Fetch routing network (processed segments) and load into memory."""
-
-        start_time = time.time()
-
-        # Get edge network table
-        edge_network_table = None
-        try:
-            layer_id = str(
-                (
-                    await self.db_connection.execute(
-                        text(
-                            f"""SELECT layer_id
-                        FROM customer.layer_project
-                        WHERE id = {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID};"""
-                        )
-                    )
-                ).fetchall()[0][0]
-            )
-            user_id = str(
-                (
-                    await self.db_connection.execute(
-                        text(
-                            f"""SELECT user_id
-                        FROM customer.layer
-                        WHERE id = '{layer_id}';"""
-                        )
-                    )
-                ).fetchall()[0][0]
-            )
-            edge_network_table = (
-                f"user_data.street_network_line_{user_id.replace('-', '')}"
-            )
-        except Exception as e:
-            print(e)
-            return
-
-        # Get network H3 cells
-        h3_3_grid = []
-        try:
-            sql_get_h3_3_grid = text(
-                f"""
-                WITH region AS (
-                    SELECT ST_Union(geom) AS geom FROM {settings.NETWORK_REGION_TABLE}
-                )
-                SELECT g.h3_short FROM region r,
-                LATERAL basic.fill_polygon_h3_3(r.geom) g;
-            """
-            )
-            result = (await self.db_connection.execute(sql_get_h3_3_grid)).fetchall()
-            for h3_index in result:
-                h3_3_grid.append(h3_index[0])
-        except Exception as e:
-            print(e)
-            # TODO Throw appropriate exception
-
-        # Load segments into polars data frames
-        segments_df = {}
-        df_size = 0.0
-        try:
-            # Create cache dir if it doesn't exist
-            make_dir(settings.CACHE_DIR)
-
-            for index in tqdm(
-                range(len(h3_3_grid)), desc="Loading H3_3 grid", unit=" cell"
-            ):
-                h3_index = h3_3_grid[index]
-
-                if os.path.exists(f"{settings.CACHE_DIR}/{h3_index}.parquet"):
-                    segments_df[h3_index] = pl.read_parquet(
-                        f"{settings.CACHE_DIR}/{h3_index}.parquet"
-                    )
-                else:
-                    segments_df[h3_index] = pl.read_database_uri(
-                        query=f"""
-                            SELECT
-                                edge_id AS id, length_m, length_3857, class_, impedance_slope, impedance_slope_reverse,
-                                impedance_surface, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                                maxspeed_forward, maxspeed_backward, source, target, h3_3, h3_6
-                            FROM {edge_network_table}
-                            WHERE h3_3 = {h3_index}
-                        """,
-                        uri=settings.POSTGRES_DATABASE_URI,
-                        schema_overrides=SEGMENT_DATA_SCHEMA,
-                    )
-                    segments_df[h3_index] = segments_df[h3_index].with_columns(
-                        pl.col("coordinates_3857").str.json_extract()
-                    )
-
-                    with open(f"{settings.CACHE_DIR}/{h3_index}.parquet", "wb") as file:
-                        segments_df[h3_index].write_parquet(file)
-
-                df_size += segments_df[h3_index].estimated_size("gb")
-        except Exception as e:
-            print(e)
-
-        print(f"Network load time: {round((time.time() - start_time) / 60, 1)} min")
-        print(f"Network in-memory size: {round(df_size, 1)} GB")
-
-        return segments_df
 
 
 class CRUDCatchmentArea:
@@ -153,7 +45,7 @@ class CRUDCatchmentArea:
         """Read relevant sub-network for catchment area calculation from polars dataframe."""
 
         # Get valid segment classes based on transport mode
-        if type(obj_in) == ICatchmentAreaActiveMobility:
+        if type(obj_in) is ICatchmentAreaActiveMobility:
             valid_segment_classes = (
                 VALID_WALKING_CLASSES
                 if obj_in.routing_type == "walking"
@@ -163,11 +55,11 @@ class CRUDCatchmentArea:
             valid_segment_classes = VALID_CAR_CLASSES
 
         # Compute buffer distance for identifying relevant H3_6 cells
-        if type(obj_in.travel_cost) == CatchmentAreaTravelTimeCostActiveMobility:
+        if type(obj_in.travel_cost) is CatchmentAreaTravelTimeCostActiveMobility:
             buffer_dist = obj_in.travel_cost.max_traveltime * (
                 (obj_in.travel_cost.speed * 1000) / 60
             )
-        elif type(obj_in.travel_cost) == CatchmentAreaTravelTimeCostMotorizedMobility:
+        elif type(obj_in.travel_cost) is CatchmentAreaTravelTimeCostMotorizedMobility:
             buffer_dist = obj_in.travel_cost.max_traveltime * (
                 (settings.CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED * 1000) / 60
             )
@@ -372,7 +264,7 @@ class CRUDCatchmentArea:
                 speed=(
                     obj_in.travel_cost.speed / 3.6
                     if type(obj_in.travel_cost)
-                    == CatchmentAreaTravelTimeCostActiveMobility
+                    is CatchmentAreaTravelTimeCostActiveMobility
                     else None
                 ),
             )
@@ -539,11 +431,11 @@ class CRUDCatchmentArea:
         """Get H3_10 cell grid required for computing a grid-type catchment area."""
 
         # Compute buffer distance for identifying relevant H3_10 cells
-        if type(obj_in.travel_cost) == CatchmentAreaTravelTimeCostActiveMobility:
+        if type(obj_in.travel_cost) is CatchmentAreaTravelTimeCostActiveMobility:
             buffer_dist = obj_in.travel_cost.max_traveltime * (
                 (obj_in.travel_cost.speed * 1000) / 60
             )
-        elif type(obj_in.travel_cost) == CatchmentAreaTravelTimeCostMotorizedMobility:
+        elif type(obj_in.travel_cost) is CatchmentAreaTravelTimeCostMotorizedMobility:
             buffer_dist = obj_in.travel_cost.max_traveltime * (
                 (settings.CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED * 1000) / 60
             )
@@ -690,7 +582,11 @@ class CRUDCatchmentArea:
 
         # Fetch routing network (processed segments) and load into memory
         if self.routing_network is None:
-            self.routing_network = await FetchRoutingNetwork(self.db_connection).fetch()
+            self.routing_network, _ = await StreetNetworkUtil(self.db_connection).fetch(
+                edge_layer_project_id=settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID,
+                node_layer_project_id=None,
+                region_geofence_table=settings.NETWORK_REGION_TABLE,
+            )
         routing_network = self.routing_network
 
         total_start = time.time()
@@ -747,14 +643,14 @@ class CRUDCatchmentArea:
             ]
 
             if (
-                type(obj_in) == ICatchmentAreaActiveMobility
+                type(obj_in) is ICatchmentAreaActiveMobility
                 and is_travel_time_catchment_area
             ):
                 speed = obj_in.travel_cost.speed / 3.6
             else:
                 speed = None
 
-            if type(obj_in) == ICatchmentAreaActiveMobility:
+            if type(obj_in) is ICatchmentAreaActiveMobility:
                 zoom = 12
             else:
                 zoom = 10  # Use lower resolution grid for car catchment areas

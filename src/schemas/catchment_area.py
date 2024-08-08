@@ -22,6 +22,12 @@ SEGMENT_DATA_SCHEMA = {
     "h3_6": pl.Int32,
 }
 
+CONNECTOR_DATA_SCHEMA = {
+    "id": pl.Int64,
+    "h3_3": pl.Int32,
+    "h3_6": pl.Int32,
+}
+
 VALID_WALKING_CLASSES = [
     "secondary",
     "tertiary",

@@ -13,6 +13,11 @@ class SyncPostgresDsn(PostgresDsn):
 
 
 class Settings(BaseSettings):
+    DEBUG_MODE: bool = True
+
+    CUSTOMER_SCHEMA: str = "customer"
+    USER_DATA_SCHEMA: str = "user_data"
+
     API_V2_STR: str = "/api/v2"
     PROJECT_NAME: Optional[str] = "GOAT Routing API"
     CACHE_DIR: str = "/app/src/cache"
