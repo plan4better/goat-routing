@@ -522,60 +522,61 @@ class CRUDCatchmentArea:
             await self.db_connection.commit()
         elif obj_in.catchment_area_type == "network":
             # Save catchment area network data
-            batch_size = 1000
-            insert_string = ""
-            for i in range(0, len(network["features"])):
-                coordinates = network["features"][i]["geometry"]["coordinates"]
-                cost = network["features"][i]["properties"]["cost"]
-                points_string = ""
-                for pair in coordinates:
-                    points_string += f"ST_MakePoint({pair[0]}, {pair[1]}),"
-                insert_string += f"""(
-                    '{obj_in.layer_id}',
-                    ST_Transform(ST_SetSRID(ST_MakeLine(ARRAY[{points_string.rstrip(',')}]), 3857), 4326),
-                    ROUND({cost})
-                ),"""
-                if i % batch_size == 0 or i == (len(network["features"]) - 1):
-                    insert_string = text(
-                        f"""
-                        INSERT INTO {obj_in.result_table} (layer_id, geom, integer_attr1)
-                        VALUES {insert_string.rstrip(",")};
-                    """
-                    )
-                    await self.db_connection.execute(insert_string)
-                    await self.db_connection.commit()
-                    insert_string = ""
+            for batch_index in range(
+                0, len(network["features"]), settings.DATA_INSERT_BATCH_SIZE
+            ):
+                insert_string = ""
+                for i in range(
+                    batch_index,
+                    min(
+                        len(network["features"]),
+                        batch_index + settings.DATA_INSERT_BATCH_SIZE,
+                    ),
+                ):
+                    coordinates = network["features"][i]["geometry"]["coordinates"]
+                    cost = network["features"][i]["properties"]["cost"]
+                    points_string = ""
+                    for pair in coordinates:
+                        points_string += f"ST_MakePoint({pair[0]}, {pair[1]}),"
+                    insert_string += f"""(
+                        '{obj_in.layer_id}',
+                        ST_Transform(ST_SetSRID(ST_MakeLine(ARRAY[{points_string.rstrip(',')}]), 3857), 4326),
+                        ROUND({cost})
+                    ),"""
+                insert_string = text(
+                    f"""
+                    INSERT INTO {obj_in.result_table} (layer_id, geom, integer_attr1)
+                    VALUES {insert_string.rstrip(",")};
+                """
+                )
+                await self.db_connection.execute(insert_string)
+                await self.db_connection.commit()
         else:
             # Save catchment area grid data
-            batch_size = 1000
-            insert_string = ""
-            for i in range(0, len(grid_index)):
-                if math.isnan(grid[i]):
-                    continue
-                insert_string += f"""(
-                    '{obj_in.layer_id}',
-                    '{grid_index[i]}',
-                    ROUND({grid[i]})
-                ),"""
-                if i % batch_size == 0 or i == (len(grid_index) - 1):
-                    insert_string = text(
-                        f"""
-                        INSERT INTO {obj_in.result_table} (layer_id, text_attr1, integer_attr1)
-                        VALUES {insert_string.rstrip(",")};
-                    """
-                    )
-                    await self.db_connection.execute(insert_string)
-                    await self.db_connection.commit()
-                    insert_string = ""
-            sql_update_geom = text(
-                f"""
-                UPDATE {obj_in.result_table}
-                SET geom = ST_SetSRID(h3_cell_to_boundary(text_attr1::h3index)::geometry, 4326)
-                WHERE layer_id = '{obj_in.layer_id}';
-            """
-            )
-            await self.db_connection.execute(sql_update_geom)
-            await self.db_connection.commit()
+            for batch_index in range(
+                0, len(grid_index), settings.DATA_INSERT_BATCH_SIZE
+            ):
+                insert_string = ""
+                for i in range(
+                    batch_index,
+                    min(len(grid_index), batch_index + settings.DATA_INSERT_BATCH_SIZE),
+                ):
+                    if math.isnan(grid[i]):
+                        continue
+                    insert_string += f"""(
+                        '{obj_in.layer_id}',
+                        ST_SetSRID(h3_cell_to_boundary('{grid_index[i]}'::h3index)::geometry, 4326),
+                        '{grid_index[i]}',
+                        ROUND({grid[i]})
+                    ),"""
+                insert_string = text(
+                    f"""
+                    INSERT INTO {obj_in.result_table} (layer_id, geom, text_attr1, integer_attr1)
+                    VALUES {insert_string.rstrip(",")};
+                """
+                )
+                await self.db_connection.execute(insert_string)
+                await self.db_connection.commit()
 
     async def run(self, obj_in: ICatchmentAreaActiveMobility | ICatchmentAreaCar):
         """Compute catchment areas for the given request parameters."""
