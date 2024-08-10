@@ -507,7 +507,7 @@ class CRUDCatchmentArea:
                     FROM isochrones_filled
                 )
                 INSERT INTO {obj_in.result_table} (layer_id, geom, integer_attr1)
-                SELECT '{obj_in.layer_id}', ST_MakeValid(COALESCE(j.geom, a.filled_geom)) AS geom, a."minute"
+                SELECT '{obj_in.layer_id}', ST_MakeValid(COALESCE(j.geom, a.filled_geom)) AS geom, ROUND(a."minute")
                 FROM isochrones_with_id a
                 LEFT JOIN LATERAL
                 (
@@ -533,12 +533,12 @@ class CRUDCatchmentArea:
                 insert_string += f"""(
                     '{obj_in.layer_id}',
                     ST_Transform(ST_SetSRID(ST_MakeLine(ARRAY[{points_string.rstrip(',')}]), 3857), 4326),
-                    {cost}
+                    ROUND({cost})
                 ),"""
                 if i % batch_size == 0 or i == (len(network["features"]) - 1):
                     insert_string = text(
                         f"""
-                        INSERT INTO {obj_in.result_table} (layer_id, geom, float_attr1)
+                        INSERT INTO {obj_in.result_table} (layer_id, geom, integer_attr1)
                         VALUES {insert_string.rstrip(",")};
                     """
                     )
@@ -555,7 +555,7 @@ class CRUDCatchmentArea:
                 insert_string += f"""(
                     '{obj_in.layer_id}',
                     '{grid_index[i]}',
-                    {grid[i]}
+                    ROUND({grid[i]})
                 ),"""
                 if i % batch_size == 0 or i == (len(grid_index) - 1):
                     insert_string = text(
