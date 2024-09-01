@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     NETWORK_REGION_TABLE = "basic.geofence_active_mobility"
 
     CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED = 80  # km/h
-    CATCHMENT_AREA_HOLE_THRESHOLD_SQM = 10000  # 100m x 100m
+    CATCHMENT_AREA_HOLE_THRESHOLD_SQM = 200000  # 20 hectares, ~450m x 450m
 
     DATA_INSERT_BATCH_SIZE = 800
 

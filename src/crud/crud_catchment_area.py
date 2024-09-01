@@ -569,14 +569,17 @@ class CRUDCatchmentArea:
                         '{grid_index[i]}',
                         ROUND({grid[i]})
                     ),"""
-                insert_string = text(
-                    f"""
-                    INSERT INTO {obj_in.result_table} (layer_id, geom, text_attr1, integer_attr1)
-                    VALUES {insert_string.rstrip(",")};
-                """
-                )
-                await self.db_connection.execute(insert_string)
-                await self.db_connection.commit()
+
+                # Insert only if any grid data was added to the query in this batch
+                if insert_string:
+                    insert_string = text(
+                        f"""
+                        INSERT INTO {obj_in.result_table} (layer_id, geom, text_attr1, integer_attr1)
+                        VALUES {insert_string.rstrip(",")};
+                    """
+                    )
+                    await self.db_connection.execute(insert_string)
+                    await self.db_connection.commit()
 
     async def run(self, obj_in: ICatchmentAreaActiveMobility | ICatchmentAreaCar):
         """Compute catchment areas for the given request parameters."""
