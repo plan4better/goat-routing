@@ -116,71 +116,71 @@ class CRUDCatchmentArea:
                 sub_network = sub_df
 
         # Produce all network modifications required to apply the specified scenario
-        network_modifications_table = f"temporal.{str(uuid.uuid4()).replace('-', '_')}"
         scenario_id = (
             f"'{obj_in.scenario_id}'" if obj_in.scenario_id is not None else "NULL"
         )
-        await self.db_connection.execute(
-            text(
-                f"""
+        sql_produce_network_modifications = text(
+            f"""
                 SELECT basic.produce_network_modifications(
                     {scenario_id},
                     {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID},
-                    {settings.STREET_NETWORK_NODE_DEFAULT_LAYER_PROJECT_ID},
-                    '{network_modifications_table}'
+                    {settings.STREET_NETWORK_NODE_DEFAULT_LAYER_PROJECT_ID}
                 );
             """
-            )
         )
+        network_modifications_table = (
+            await self.db_connection.execute(sql_produce_network_modifications)
+        ).fetchone()[0]
 
         # Apply network modifications to the sub-network
-        segments_to_discard = []
-        sql_get_network_modifications = text(
-            f"""
-            SELECT edit_type, id, class_, source, target,
-                length_m, length_3857, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
-                impedance_slope, impedance_slope_reverse, impedance_surface, maxspeed_forward,
-                maxspeed_backward, h3_6, h3_3
-            FROM "{network_modifications_table}";
-        """
-        )
-        result = (
-            await self.db_connection.execute(sql_get_network_modifications)
-        ).fetchall()
-
-        for modification in result:
-            if modification[0] == "d":
-                segments_to_discard.append(modification[1])
-                continue
-
-            new_segment = pl.DataFrame(
-                [
-                    {
-                        "id": modification[1],
-                        "length_m": modification[5],
-                        "length_3857": modification[6],
-                        "class_": modification[2],
-                        "impedance_slope": modification[8],
-                        "impedance_slope_reverse": modification[9],
-                        "impedance_surface": modification[10],
-                        "coordinates_3857": modification[7],
-                        "maxspeed_forward": modification[11],
-                        "maxspeed_backward": modification[12],
-                        "source": modification[3],
-                        "target": modification[4],
-                        "h3_3": modification[13],
-                        "h3_6": modification[14],
-                    }
-                ],
-                schema_overrides=SEGMENT_DATA_SCHEMA,
+        if network_modifications_table is not None:
+            segments_to_discard = []
+            sql_get_network_modifications = text(
+                f"""
+                SELECT edit_type, id, class_, source, target,
+                    length_m, length_3857, CAST(coordinates_3857 AS TEXT) AS coordinates_3857,
+                    impedance_slope, impedance_slope_reverse, impedance_surface, maxspeed_forward,
+                    maxspeed_backward, h3_6, h3_3
+                FROM "{network_modifications_table}";
+            """
             )
-            new_segment = new_segment.with_columns(
-                pl.col("coordinates_3857").str.json_extract()
-            )
-            sub_network.extend(new_segment)
+            result = (
+                await self.db_connection.execute(sql_get_network_modifications)
+            ).fetchall()
 
-        # Remove segments which are deleted or modified due to the scenario
-        sub_network = sub_network.filter(~pl.col("id").is_in(segments_to_discard))
+            for modification in result:
+                if modification[0] == "d":
+                    segments_to_discard.append(modification[1])
+                    continue
+
+                new_segment = pl.DataFrame(
+                    [
+                        {
+                            "id": modification[1],
+                            "length_m": modification[5],
+                            "length_3857": modification[6],
+                            "class_": modification[2],
+                            "impedance_slope": modification[8],
+                            "impedance_slope_reverse": modification[9],
+                            "impedance_surface": modification[10],
+                            "coordinates_3857": modification[7],
+                            "maxspeed_forward": modification[11],
+                            "maxspeed_backward": modification[12],
+                            "source": modification[3],
+                            "target": modification[4],
+                            "h3_3": modification[13],
+                            "h3_6": modification[14],
+                        }
+                    ],
+                    schema_overrides=SEGMENT_DATA_SCHEMA,
+                )
+                new_segment = new_segment.with_columns(
+                    pl.col("coordinates_3857").str.json_extract()
+                )
+                sub_network.extend(new_segment)
+
+            # Remove segments which are deleted or modified due to the scenario
+            sub_network = sub_network.filter(~pl.col("id").is_in(segments_to_discard))
 
         # Create necessary artifical segments and add them to our sub network
         origin_point_connectors = []
@@ -199,7 +199,7 @@ class CRUDCatchmentArea:
                 h3_3, h3_6, point_cell_index, point_h3_3
             FROM basic.get_artificial_segments(
                 {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID},
-                '{network_modifications_table}',
+                {f"'{network_modifications_table}'" if network_modifications_table is not None else "NULL"},
                 '{input_table}',
                 {num_points},
                 '{",".join(valid_segment_classes)}',
@@ -341,9 +341,10 @@ class CRUDCatchmentArea:
         """Delete the temporary input and network modifications tables."""
 
         await self.db_connection.execute(text(f'DROP TABLE "{input_table}";'))
-        await self.db_connection.execute(
-            text(f'DROP TABLE "{network_modifications_table}";')
-        )
+        if network_modifications_table is not None:
+            await self.db_connection.execute(
+                text(f'DROP TABLE "{network_modifications_table}";')
+            )
         await self.db_connection.commit()
 
     def compute_segment_cost(self, sub_network, mode, speed):
