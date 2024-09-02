@@ -123,8 +123,8 @@ class CRUDCatchmentArea:
             f"""
                 SELECT basic.produce_network_modifications(
                     {scenario_id},
-                    {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID},
-                    {settings.STREET_NETWORK_NODE_DEFAULT_LAYER_PROJECT_ID}
+                    {obj_in.street_network_edge_layer_project_id},
+                    {obj_in.street_network_node_layer_project_id}
                 );
             """
         )
@@ -198,7 +198,7 @@ class CRUDCatchmentArea:
                 maxspeed_forward, maxspeed_backward, source, target,
                 h3_3, h3_6, point_cell_index, point_h3_3
             FROM basic.get_artificial_segments(
-                {settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID},
+                {obj_in.street_network_edge_layer_project_id},
                 {f"'{network_modifications_table}'" if network_modifications_table is not None else "NULL"},
                 '{input_table}',
                 {num_points},
@@ -585,21 +585,21 @@ class CRUDCatchmentArea:
     async def run(self, obj_in: ICatchmentAreaActiveMobility | ICatchmentAreaCar):
         """Compute catchment areas for the given request parameters."""
 
+        if obj_in["routing_type"] != CatchmentAreaRoutingTypeCar.car.value:
+            obj_in = ICatchmentAreaActiveMobility(**obj_in)
+        else:
+            obj_in = ICatchmentAreaCar(**obj_in)
+
         # Fetch routing network (processed segments) and load into memory
         if self.routing_network is None:
             self.routing_network, _ = await StreetNetworkUtil(self.db_connection).fetch(
-                edge_layer_project_id=settings.STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID,
+                edge_layer_project_id=obj_in.street_network_edge_layer_project_id,
                 node_layer_project_id=None,
                 region_geofence_table=settings.NETWORK_REGION_TABLE,
             )
         routing_network = self.routing_network
 
         total_start = time.time()
-
-        if obj_in["routing_type"] != CatchmentAreaRoutingTypeCar.car.value:
-            obj_in = ICatchmentAreaActiveMobility(**obj_in)
-        else:
-            obj_in = ICatchmentAreaCar(**obj_in)
 
         # Read & process routing network to extract relevant sub-network
         start_time = time.time()

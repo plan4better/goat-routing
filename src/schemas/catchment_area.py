@@ -257,6 +257,16 @@ class ICatchmentAreaActiveMobility(BaseModel):
         title="Scenario ID",
         description="The ID of the scenario that is to be applied on the base network.",
     )
+    street_network_edge_layer_project_id: int = Field(
+        ...,
+        title="Street Network Edge Layer Project ID",
+        description="The layer project ID of the street network edge layer.",
+    )
+    street_network_node_layer_project_id: int = Field(
+        ...,
+        title="Street Network Node Layer Project ID",
+        description="The layer project ID of the street network node layer.",
+    )
     catchment_area_type: CatchmentAreaType = Field(
         ...,
         title="Return Type",
@@ -328,6 +338,16 @@ class ICatchmentAreaCar(BaseModel):
         None,
         title="Scenario ID",
         description="The ID of the scenario that is used for the routing.",
+    )
+    street_network_edge_layer_project_id: int = Field(
+        ...,
+        title="Street Network Edge Layer Project ID",
+        description="The layer project ID of the street network edge layer.",
+    )
+    street_network_node_layer_project_id: int = Field(
+        ...,
+        title="Street Network Node Layer Project ID",
+        description="The layer project ID of the street network node layer.",
     )
     catchment_area_type: CatchmentAreaType = Field(
         ...,

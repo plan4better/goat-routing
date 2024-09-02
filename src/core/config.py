@@ -22,9 +22,6 @@ class Settings(BaseSettings):
     PROJECT_NAME: Optional[str] = "GOAT Routing API"
     CACHE_DIR: str = "/app/src/cache"
 
-    STREET_NETWORK_EDGE_DEFAULT_LAYER_PROJECT_ID = 36126
-    STREET_NETWORK_NODE_DEFAULT_LAYER_PROJECT_ID = 37319
-
     NETWORK_REGION_TABLE = "basic.geofence_active_mobility"
 
     CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED = 80  # km/h

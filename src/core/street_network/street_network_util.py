@@ -151,13 +151,13 @@ class StreetNetworkUtil:
 
         try:
             for h3_short in street_network_region_h3_3_cells:
-                if edge_layer_project_id is not None:
+                if street_network_edge_layer_id is not None:
                     if street_network_cache.edge_cache_exists(
-                        edge_layer_project_id, h3_short
+                        street_network_edge_layer_id, h3_short
                     ):
                         # Read edge data from cache
                         edge_df = street_network_cache.read_edge_cache(
-                            edge_layer_project_id, h3_short
+                            street_network_edge_layer_id, h3_short
                         )
                     else:
                         if settings.DEBUG_MODE:
@@ -185,19 +185,19 @@ class StreetNetworkUtil:
 
                         # Write edge data into cache
                         street_network_cache.write_edge_cache(
-                            edge_layer_project_id, h3_short, edge_df
+                            street_network_edge_layer_id, h3_short, edge_df
                         )
                     # Update street network edge dictionary and memory usage
                     street_network_edge[h3_short] = edge_df
                     street_network_size += edge_df.estimated_size("gb")
 
-                if node_layer_project_id is not None:
+                if street_network_node_layer_id is not None:
                     if street_network_cache.node_cache_exists(
-                        node_layer_project_id, h3_short
+                        street_network_node_layer_id, h3_short
                     ):
                         # Read node data from cache
                         node_df = street_network_cache.read_node_cache(
-                            node_layer_project_id, h3_short
+                            street_network_node_layer_id, h3_short
                         )
                     else:
                         if settings.DEBUG_MODE:
@@ -219,7 +219,7 @@ class StreetNetworkUtil:
 
                         # Write node data into cache
                         street_network_cache.write_node_cache(
-                            node_layer_project_id, h3_short, node_df
+                            street_network_node_layer_id, h3_short, node_df
                         )
 
                     # Update street network node dictionary and memory usage
