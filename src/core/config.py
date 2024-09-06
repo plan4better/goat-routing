@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional
+from uuid import UUID
 
 from pydantic import BaseSettings, PostgresDsn, validator
 
@@ -26,6 +27,11 @@ class Settings(BaseSettings):
 
     CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED = 80  # km/h
     CATCHMENT_AREA_HOLE_THRESHOLD_SQM = 200000  # 20 hectares, ~450m x 450m
+
+    BASE_STREET_NETWORK: Optional[UUID] = "903ecdca-b717-48db-bbce-0219e41439cf"
+    DEFAULT_STREET_NETWORK_NODE_LAYER_PROJECT_ID = (
+        37319  # Hardcoded until node layers are added to GOAT projects by default
+    )
 
     DATA_INSERT_BATCH_SIZE = 800
 

@@ -1,9 +1,11 @@
 from enum import Enum
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 import polars as pl
 from pydantic import BaseModel, Field, validator
+
+from src.core.config import settings
 
 SEGMENT_DATA_SCHEMA = {
     "id": pl.Int64,
@@ -231,6 +233,19 @@ class CatchmentAreaTravelDistanceCostCar(BaseModel):
         return v
 
 
+class CatchmentAreaStreetNetwork(BaseModel):
+    edge_layer_project_id: int = Field(
+        ...,
+        title="Edge Layer Project ID",
+        description="The layer project ID of the street network edge layer.",
+    )
+    node_layer_project_id: int = Field(
+        default=settings.DEFAULT_STREET_NETWORK_NODE_LAYER_PROJECT_ID,
+        title="Node Layer Project ID",
+        description="The layer project ID of the street network node layer.",
+    )
+
+
 class ICatchmentAreaActiveMobility(BaseModel):
     """Model for the active mobility catchment area request."""
 
@@ -257,15 +272,10 @@ class ICatchmentAreaActiveMobility(BaseModel):
         title="Scenario ID",
         description="The ID of the scenario that is to be applied on the base network.",
     )
-    street_network_edge_layer_project_id: int = Field(
-        ...,
-        title="Street Network Edge Layer Project ID",
-        description="The layer project ID of the street network edge layer.",
-    )
-    street_network_node_layer_project_id: int = Field(
-        ...,
-        title="Street Network Node Layer Project ID",
-        description="The layer project ID of the street network node layer.",
+    street_network: Optional[CatchmentAreaStreetNetwork] = Field(
+        None,
+        title="Street Network Layer Config",
+        description="The configuration of the street network layers to use.",
     )
     catchment_area_type: CatchmentAreaType = Field(
         ...,
@@ -287,6 +297,15 @@ class ICatchmentAreaActiveMobility(BaseModel):
         title="Layer ID",
         description="The ID of the layer the results should be saved.",
     )
+
+    # Ensure street network is specified if a scenario ID is provided
+    @validator("street_network", pre=True, always=True)
+    def check_street_network(cls, v, values):
+        if values["scenario_id"] is not None and v is None:
+            raise ValueError(
+                "The street network must be set if a scenario ID is provided."
+            )
+        return v
 
     # Check that polygon difference exists if catchment area type is polygon
     @validator("polygon_difference", pre=True, always=True)
@@ -339,15 +358,10 @@ class ICatchmentAreaCar(BaseModel):
         title="Scenario ID",
         description="The ID of the scenario that is used for the routing.",
     )
-    street_network_edge_layer_project_id: int = Field(
-        ...,
-        title="Street Network Edge Layer Project ID",
-        description="The layer project ID of the street network edge layer.",
-    )
-    street_network_node_layer_project_id: int = Field(
-        ...,
-        title="Street Network Node Layer Project ID",
-        description="The layer project ID of the street network node layer.",
+    street_network: Optional[CatchmentAreaStreetNetwork] = Field(
+        None,
+        title="Street Network Layer Config",
+        description="The configuration of the street network layers to use.",
     )
     catchment_area_type: CatchmentAreaType = Field(
         ...,
@@ -369,6 +383,15 @@ class ICatchmentAreaCar(BaseModel):
         title="Layer ID",
         description="The ID of the layer the results should be saved.",
     )
+
+    # Ensure street network is specified if a scenario ID is provided
+    @validator("street_network", pre=True, always=True)
+    def check_street_network(cls, v, values):
+        if values["scenario_id"] is not None and v is None:
+            raise ValueError(
+                "The street network must be set if a scenario ID is provided."
+            )
+        return v
 
     # Check that polygon difference exists if catchment area type is polygon
     @validator("polygon_difference", pre=True, always=True)

@@ -22,6 +22,10 @@ from src.schemas.catchment_area import (
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.utils import make_dir
 
+####################################################################################################
+# TODO: Refactor and fix
+####################################################################################################
+
 
 class FetchRoutingNetwork:
     def __init__(self, db_cursor):

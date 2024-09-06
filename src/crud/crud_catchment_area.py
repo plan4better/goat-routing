@@ -27,6 +27,7 @@ from src.schemas.catchment_area import (
 )
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
 from src.schemas.status import ProcessingStatus
+from src.utils import format_value_null_sql
 
 
 class CRUDCatchmentArea:
@@ -116,24 +117,22 @@ class CRUDCatchmentArea:
                 sub_network = sub_df
 
         # Produce all network modifications required to apply the specified scenario
-        scenario_id = (
-            f"'{obj_in.scenario_id}'" if obj_in.scenario_id is not None else "NULL"
-        )
-        sql_produce_network_modifications = text(
-            f"""
-                SELECT basic.produce_network_modifications(
-                    {scenario_id},
-                    {obj_in.street_network_edge_layer_project_id},
-                    {obj_in.street_network_node_layer_project_id}
-                );
-            """
-        )
-        network_modifications_table = (
-            await self.db_connection.execute(sql_produce_network_modifications)
-        ).fetchone()[0]
+        network_modifications_table = None
+        if obj_in.scenario_id:
+            sql_produce_network_modifications = text(
+                f"""
+                    SELECT basic.produce_network_modifications(
+                        {format_value_null_sql(obj_in.scenario_id)},
+                        {obj_in.street_network.edge_layer_project_id},
+                        {obj_in.street_network.node_layer_project_id}
+                    );
+                """
+            )
+            network_modifications_table = (
+                await self.db_connection.execute(sql_produce_network_modifications)
+            ).fetchone()[0]
 
-        # Apply network modifications to the sub-network
-        if network_modifications_table is not None:
+            # Apply network modifications to the sub-network
             segments_to_discard = []
             sql_get_network_modifications = text(
                 f"""
@@ -198,9 +197,9 @@ class CRUDCatchmentArea:
                 maxspeed_forward, maxspeed_backward, source, target,
                 h3_3, h3_6, point_cell_index, point_h3_3
             FROM basic.get_artificial_segments(
-                {obj_in.street_network_edge_layer_project_id},
-                {f"'{network_modifications_table}'" if network_modifications_table is not None else "NULL"},
-                '{input_table}',
+                {format_value_null_sql(settings.BASE_STREET_NETWORK)},
+                {format_value_null_sql(network_modifications_table)},
+                {format_value_null_sql(input_table)},
                 {num_points},
                 '{",".join(valid_segment_classes)}',
                 10
@@ -593,8 +592,8 @@ class CRUDCatchmentArea:
         # Fetch routing network (processed segments) and load into memory
         if self.routing_network is None:
             self.routing_network, _ = await StreetNetworkUtil(self.db_connection).fetch(
-                edge_layer_project_id=obj_in.street_network_edge_layer_project_id,
-                node_layer_project_id=None,
+                edge_layer_id=settings.BASE_STREET_NETWORK,
+                node_layer_id=None,
                 region_geofence_table=settings.NETWORK_REGION_TABLE,
             )
         routing_network = self.routing_network
