@@ -135,7 +135,7 @@ class StreetNetworkUtil:
                             edge_layer_id, h3_short
                         )
                     else:
-                        if settings.DEBUG_MODE:
+                        if settings.ENVIRONMENT == "dev":
                             print(
                                 f"Fetching street network edge data for H3_3 cell {h3_short}"
                             )
@@ -173,7 +173,7 @@ class StreetNetworkUtil:
                             node_layer_id, h3_short
                         )
                     else:
-                        if settings.DEBUG_MODE:
+                        if settings.ENVIRONMENT == "dev":
                             print(
                                 f"Fetching street network node data for H3_3 cell {h3_short}"
                             )
@@ -217,10 +217,7 @@ class StreetNetworkUtil:
 
         end_time = time.time()
 
-        if settings.DEBUG_MODE:
-            print(
-                f"Street network load time: {round((end_time - start_time) / 60, 1)} min"
-            )
-            print(f"Street network in-memory size: {round(street_network_size, 1)} GB")
+        print(f"Street network load time: {round((end_time - start_time) / 60, 1)} min")
+        print(f"Street network in-memory size: {round(street_network_size, 1)} GB")
 
         return street_network_edge, street_network_node

@@ -14,7 +14,9 @@ class SyncPostgresDsn(PostgresDsn):
 
 
 class Settings(BaseSettings):
-    DEBUG_MODE: bool = True
+    # Monitoring
+    SENTRY_DSN: Optional[str] = None
+    ENVIRONMENT: Optional[str] = "dev"
 
     CUSTOMER_SCHEMA: str = "customer"
     USER_DATA_SCHEMA: str = "user_data"
