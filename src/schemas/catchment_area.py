@@ -234,13 +234,20 @@ class CatchmentAreaTravelDistanceCostCar(BaseModel):
 
 
 class CatchmentAreaStreetNetwork(BaseModel):
+    def __init__(self, **data):
+        super().__init__(**data)
+        if self.node_layer_project_id is None:
+            self.node_layer_project_id = (
+                settings.DEFAULT_STREET_NETWORK_NODE_LAYER_PROJECT_ID
+            )
+
     edge_layer_project_id: int = Field(
         ...,
         title="Edge Layer Project ID",
         description="The layer project ID of the street network edge layer.",
     )
-    node_layer_project_id: int = Field(
-        default=settings.DEFAULT_STREET_NETWORK_NODE_LAYER_PROJECT_ID,
+    node_layer_project_id: Optional[int] = Field(
+        default=None,
         title="Node Layer Project ID",
         description="The layer project ID of the street network node layer.",
     )
