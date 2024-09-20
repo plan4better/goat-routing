@@ -117,18 +117,20 @@ class CRUDCatchmentArea:
                 sub_network = sub_df
 
         # Produce all network modifications required to apply the specified scenario
-        sql_produce_network_modifications = text(
-            f"""
-                SELECT basic.produce_network_modifications(
-                    {format_value_null_sql(obj_in.scenario_id)},
-                    {obj_in.street_network.edge_layer_project_id},
-                    {obj_in.street_network.node_layer_project_id}
-                );
-            """
-        )
-        network_modifications_table = (
-            await self.db_connection.execute(sql_produce_network_modifications)
-        ).fetchone()[0]
+        network_modifications_table = None
+        if obj_in.scenario_id:
+            sql_produce_network_modifications = text(
+                f"""
+                    SELECT basic.produce_network_modifications(
+                        {format_value_null_sql(obj_in.scenario_id)},
+                        {obj_in.street_network.edge_layer_project_id},
+                        {obj_in.street_network.node_layer_project_id}
+                    );
+                """
+            )
+            network_modifications_table = (
+                await self.db_connection.execute(sql_produce_network_modifications)
+            ).fetchone()[0]
 
         if network_modifications_table:
             # Apply network modifications to the sub-network
