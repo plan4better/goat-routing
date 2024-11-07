@@ -76,6 +76,7 @@ VALID_CAR_CLASSES = [
     "residential",
     "living_street",
     "trunk",
+    "unclassified",
     "parking_aisle",
     "driveway",
     "alley",

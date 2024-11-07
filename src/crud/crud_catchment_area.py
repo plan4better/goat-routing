@@ -81,11 +81,13 @@ class CRUDCatchmentArea:
                 FROM point
             ),
             cells AS (
-                SELECT h3_index
+                SELECT
+                    basic.to_short_h3_6(h3_index::bigint) AS h3_6,
+                    basic.to_short_h3_3(h3_lat_lng_to_cell(ST_Centroid(h3_geom)::point, 3)::bigint) AS h3_3
                 FROM buffer,
                 LATERAL basic.fill_polygon_h3_6(buffer.geom)
             )
-            SELECT basic.to_short_h3_3(h3_cell_to_parent(h3_index, 3)::bigint) AS h3_3, ARRAY_AGG(basic.to_short_h3_6(h3_index::bigint)) AS h3_6
+            SELECT h3_3, ARRAY_AGG(h3_6) AS h3_6
             FROM cells
             GROUP BY h3_3;
         """
