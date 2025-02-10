@@ -17,7 +17,7 @@ class StreetNetworkUtil:
     async def _get_user_id(self, layer_id: UUID):
         """Get the user ID of the specified layer ID."""
 
-        user_id: UUID = None
+        user_id: UUID | None = None
 
         try:
             # Get the user ID of the layer
@@ -36,13 +36,13 @@ class StreetNetworkUtil:
 
     async def _get_street_network_tables(
         self,
-        edge_layer_id: UUID,
-        node_layer_id: UUID,
+        edge_layer_id: UUID | None,
+        node_layer_id: UUID | None,
     ):
         """Get table names and layer IDs of the edge and node tables."""
 
-        edge_table: str = None
-        node_table: str = None
+        edge_table: str | None = None
+        node_table: str | None = None
 
         # Get edge table name if a layer ID is specified
         if edge_layer_id:
@@ -99,8 +99,8 @@ class StreetNetworkUtil:
 
     async def fetch(
         self,
-        edge_layer_id: UUID,
-        node_layer_id: UUID,
+        edge_layer_id: UUID | None,
+        node_layer_id: UUID | None,
         region_geofence_table: str,
     ):
         """Fetch street network from specified layer and load into Polars dataframes."""

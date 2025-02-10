@@ -31,7 +31,7 @@ from src.utils import format_value_null_sql
 
 
 class CRUDCatchmentArea:
-    def __init__(self, db_connection: AsyncSession, redis: Redis) -> None:
+    def __init__(self, db_connection: AsyncSession, redis: Redis | None) -> None:
         self.db_connection = db_connection
         self.redis = redis
         self.routing_network = None
@@ -42,6 +42,7 @@ class CRUDCatchmentArea:
         obj_in: ICatchmentAreaActiveMobility | ICatchmentAreaCar,
         input_table: str,
         num_points: int,
+        origin_point_cell_resolution: int = 10,
     ) -> Any:
         """Read relevant sub-network for catchment area calculation from polars dataframe."""
 
@@ -205,7 +206,7 @@ class CRUDCatchmentArea:
                 {format_value_null_sql(input_table)},
                 {num_points},
                 '{",".join(valid_segment_classes)}',
-                10
+                {origin_point_cell_resolution}
             );
         """
         )
@@ -628,12 +629,14 @@ class CRUDCatchmentArea:
             # Delete input table for catchment area origin points
             await self.drop_temp_tables(input_table, network_modifications_table)
         except Exception as e:
-            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
+            if self.redis:
+                self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             await self.db_connection.rollback()
             if type(e) == DisconnectedOriginError:
-                self.redis.set(
-                    str(obj_in.layer_id), ProcessingStatus.disconnected_origin.value
-                )
+                if self.redis:
+                    self.redis.set(
+                        str(obj_in.layer_id), ProcessingStatus.disconnected_origin.value
+                    )
             print(e)
             return
         print(f"Network read time: {round(time.time() - start_time, 2)} sec")
@@ -713,7 +716,8 @@ class CRUDCatchmentArea:
                 )
                 print("Computed catchment area shapes.")
         except Exception as e:
-            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
+            if self.redis:
+                self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             print(e)
             return
         print(
@@ -731,7 +735,8 @@ class CRUDCatchmentArea:
                 catchment_area_grid,
             )
         except Exception as e:
-            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
+            if self.redis:
+                self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             await self.db_connection.rollback()
             print(e)
             return
@@ -739,4 +744,5 @@ class CRUDCatchmentArea:
 
         print(f"Total time: {round(time.time() - total_start, 2)} sec")
 
-        self.redis.set(str(obj_in.layer_id), ProcessingStatus.success.value)
+        if self.redis:
+            self.redis.set(str(obj_in.layer_id), ProcessingStatus.success.value)

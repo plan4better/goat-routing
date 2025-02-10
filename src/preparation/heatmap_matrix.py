@@ -5,6 +5,8 @@ import psycopg2
 from src.core.config import settings
 from src.preparation.heatmap_matrix_process import HeatmapMatrixProcess
 from src.schemas.catchment_area import CatchmentAreaRoutingTypeActiveMobility
+from src.schemas.heatmap import GEOFENCE_TABLE_CONFIG
+from src.utils import print_info
 
 
 class HeatmapMatrixPreparation:
@@ -14,19 +16,30 @@ class HeatmapMatrixPreparation:
         self.NUM_THREADS = 20
 
     def get_cells_to_process(self, db_cursor):
-        """Get list of parent H3_6 cells to process."""
+        """Produce a grid of H3_6 cells to prepare the heatmap matrix in batches."""
 
-        # Get cells from pre-defined table
-        sql_get_cells_to_process = """
-            SELECT h3_index
-            FROM basic.geofence_heatmap_grid;
+        print_info(
+            "Producing H3_6 grid of heatmap geofence region for matrix preparation."
+        )
+
+        # Produce and fetch a list of H3_6 cells representing the geofence region
+        sql_fetch_region_h3_grid = f"""
+            WITH region AS (
+                SELECT ST_Union(geom) AS geom
+                FROM {GEOFENCE_TABLE_CONFIG[self.ROUTING_TYPE]}
+            )
+            SELECT grid.*
+            FROM region,
+            LATERAL basic.fill_polygon_h3(geom, 6) grid;
         """
-        db_cursor.execute(sql_get_cells_to_process)
+        db_cursor.execute(sql_fetch_region_h3_grid)
         result = db_cursor.fetchall()
 
         cells_to_process = []
         for h3_index in result:
             cells_to_process.append(h3_index[0])
+
+        print_info(f"Number of H3_6 cells to process: {len(cells_to_process)}")
 
         return cells_to_process
 
@@ -50,15 +63,17 @@ class HeatmapMatrixPreparation:
     def initialize_traveltime_matrix_table(self, db_cursor, db_connection):
         """Create table to store traveltime matrix."""
 
+        traveltime_matrix_table = f"basic.traveltime_matrix_{self.ROUTING_TYPE.value}_{settings.HEATMAP_MATRIX_DATE_SUFFIX}"
+
         # Drop table if it already exists
         sql_drop_table = f"""
-            DROP TABLE IF EXISTS basic.traveltime_matrix_{self.ROUTING_TYPE.value};
+            DROP TABLE IF EXISTS {traveltime_matrix_table};
         """
         db_cursor.execute(sql_drop_table)
 
         # Create table
         sql_create_table = f"""
-            CREATE TABLE basic.traveltime_matrix_{self.ROUTING_TYPE.value} (
+            CREATE TABLE {traveltime_matrix_table} (
                 orig_id h3index,
                 dest_id h3index[],
                 traveltime smallint,
@@ -71,7 +86,7 @@ class HeatmapMatrixPreparation:
         # Distribute table using CITUS
         sql_distribute_table = f"""
             SELECT create_distributed_table(
-                'basic.traveltime_matrix_{self.ROUTING_TYPE.value}',
+                '{traveltime_matrix_table}',
                 'h3_3'
             );
         """
@@ -79,6 +94,8 @@ class HeatmapMatrixPreparation:
 
         # Commit changes
         db_connection.commit()
+
+        print_info(f"Initialized traveltime matrix table: {traveltime_matrix_table}")
 
     def process_chunk(self, chunk):
         HeatmapMatrixProcess(

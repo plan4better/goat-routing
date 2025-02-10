@@ -4,6 +4,7 @@ import os
 
 import numpy as np
 from numba import njit
+from rich import print as print
 
 
 @njit(cache=True)
@@ -195,3 +196,15 @@ def format_value_null_sql(value) -> str:
         return "NULL"
     else:
         return f"'{value}'"
+
+
+def print_info(message: str):
+    print(f"[bold green]INFO[/bold green]: {message}")
+
+
+def print_error(message: str):
+    print(f"[bold red]ERROR[/bold red]: {message}")
+
+
+def print_warning(message: str):
+    print(f"[red magenta]WARNING[/red magenta]: {message}")

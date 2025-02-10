@@ -26,13 +26,17 @@ class Settings(BaseSettings):
     CACHE_DIR: str = "/app/src/cache"
 
     NETWORK_REGION_TABLE = "basic.geofence_active_mobility"
+    HEATMAP_MATRIX_DATE_SUFFIX = "20250210"
 
     CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED = 80  # km/h
     CATCHMENT_AREA_HOLE_THRESHOLD_SQM = 200000  # 20 hectares, ~450m x 450m
 
-    BASE_STREET_NETWORK: Optional[UUID] = "903ecdca-b717-48db-bbce-0219e41439cf"
+    BASE_STREET_NETWORK: UUID = UUID("903ecdca-b717-48db-bbce-0219e41439cf")
+    DEFAULT_STREET_NETWORK_EDGE_LAYER_PROJECT_ID = (
+        36126  # Hardcoded for heatmap matrix preparation
+    )
     DEFAULT_STREET_NETWORK_NODE_LAYER_PROJECT_ID = (
-        37319  # Hardcoded until node layers are added to GOAT projects by default
+        37319  # Hardcoded for heatmap matrix preparation
     )
 
     DATA_INSERT_BATCH_SIZE = 800

@@ -55,6 +55,7 @@ celery = "^5.3.6"
 redis = "^5.0.1"
 tqdm = "^4.66.1"
 sentry-sdk = {extras = ["celery", "fastapi"], version = "^2.14.0"}
+rich = "^13.9.4"
 
 
 [tool.poetry.group.dev.dependencies]
