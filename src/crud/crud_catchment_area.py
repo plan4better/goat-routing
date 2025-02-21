@@ -661,9 +661,9 @@ class CRUDCatchmentArea:
                 speed = None
 
             if type(obj_in) is ICatchmentAreaActiveMobility:
-                zoom = 12
+                zoom = 13
             else:
-                zoom = 10  # Use lower resolution grid for car catchment areas
+                zoom = 11  # Use lower resolution grid for car catchment areas
 
             catchment_area_grid_index = None
             if obj_in.catchment_area_type != "rectangular_grid":
