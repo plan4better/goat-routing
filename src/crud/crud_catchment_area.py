@@ -114,6 +114,22 @@ class CRUDCatchmentArea:
                 pl.col("h3_6").is_in(h3_6_cells)
                 & pl.col("class_").is_in(valid_segment_classes)
             )
+
+            # For active mobility routing, consider "primary" edges only if they have appropriate speed limits
+            if type(obj_in) is ICatchmentAreaActiveMobility:
+                sub_df = sub_df.filter(
+                    (pl.col("class_") != "primary")
+                    | (
+                        (
+                            pl.col("maxspeed_forward").is_not_null()
+                            & (pl.col("maxspeed_forward") <= 50)
+                        )
+                        | (
+                            pl.col("maxspeed_backward").is_not_null()
+                            & (pl.col("maxspeed_backward") <= 50)
+                        )
+                    )
+                )
             if sub_network.width > 0:
                 sub_network.extend(sub_df)
             else:
@@ -190,6 +206,9 @@ class CRUDCatchmentArea:
         origin_point_cell_index = []
         origin_point_h3_3 = []
         segments_to_discard = []
+        additional_filters = ""
+        if type(obj_in) is ICatchmentAreaActiveMobility:
+            additional_filters = "AND (class_ != ''primary'' OR s.maxspeed_forward <= 50 OR s.maxspeed_backward <= 50)"
         sql_get_artificial_segments = text(
             f"""
             SELECT
@@ -206,7 +225,8 @@ class CRUDCatchmentArea:
                 {format_value_null_sql(input_table)},
                 {num_points},
                 '{",".join(valid_segment_classes)}',
-                {origin_point_cell_resolution}
+                {origin_point_cell_resolution},
+                '{additional_filters}'
             );
         """
         )
@@ -598,7 +618,7 @@ class CRUDCatchmentArea:
             self.routing_network, _ = await StreetNetworkUtil(self.db_connection).fetch(
                 edge_layer_id=settings.BASE_STREET_NETWORK,
                 node_layer_id=None,
-                region_geofence_table=settings.NETWORK_REGION_TABLE,
+                region_geofence=f"SELECT * FROM {settings.NETWORK_REGION_TABLE}",
             )
         routing_network = self.routing_network
 

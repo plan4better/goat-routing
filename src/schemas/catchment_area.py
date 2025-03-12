@@ -31,6 +31,7 @@ CONNECTOR_DATA_SCHEMA = {
 }
 
 VALID_WALKING_CLASSES = [
+    "primary",
     "secondary",
     "tertiary",
     "residential",
@@ -48,6 +49,7 @@ VALID_WALKING_CLASSES = [
 ]
 
 VALID_BICYCLE_CLASSES = [
+    "primary",
     "secondary",
     "tertiary",
     "residential",

@@ -5,6 +5,7 @@ import polars as pl
 from polars import DataFrame
 
 from src.core.config import settings
+from src.utils import print_warning
 
 
 class StreetNetworkCache:
@@ -65,9 +66,8 @@ class StreetNetworkCache:
             with open(edge_cache_file, "rb") as file:
                 edge_df = pl.read_parquet(file)
         except Exception:
-            raise ValueError(
-                f"Failed to read edge data for H3_3 cell {h3_short} from cache."
-            )
+            error_msg = f"Failed to read edge data for H3_3 cell {h3_short} from cache."
+            raise ValueError(error_msg)
 
         return edge_df
 
@@ -86,9 +86,8 @@ class StreetNetworkCache:
             with open(node_cache_file, "rb") as file:
                 node_df = pl.read_parquet(file)
         except Exception:
-            raise ValueError(
-                f"Failed to read node data for H3_3 cell {h3_short} from cache."
-            )
+            error_msg = f"Failed to read node data for H3_3 cell {h3_short} from cache."
+            raise ValueError(error_msg)
 
         return node_df
 
@@ -103,15 +102,23 @@ class StreetNetworkCache:
         edge_cache_file = self._get_edge_cache_file_name(edge_layer_id, h3_short)
 
         try:
-            with open(edge_cache_file, "wb") as file:
-                edge_df.write_parquet(file)
+            # Only write non-empty edge data into cache
+            if not edge_df.is_empty():
+                with open(edge_cache_file, "wb") as file:
+                    edge_df.write_parquet(file)
+            else:
+                if settings.ENVIRONMENT == "dev":
+                    print_warning(
+                        f"Skipping H3_3 cell {h3_short}, street network is empty or unavailable."
+                    )
         except Exception:
             # Clean up cache file if writing fails
             if os.path.exists(edge_cache_file):
                 os.remove(edge_cache_file)
-            raise RuntimeError(
+            error_msg = (
                 f"Failed to write edge data for H3_3 cell {h3_short} into cache."
             )
+            raise RuntimeError(error_msg)
 
     def write_node_cache(
         self,
@@ -130,6 +137,7 @@ class StreetNetworkCache:
             # Clean up cache file if writing fails
             if os.path.exists(node_cache_file):
                 os.remove(node_cache_file)
-            raise RuntimeError(
+            error_msg = (
                 f"Failed to write node data for H3_3 cell {h3_short} into cache."
             )
+            raise RuntimeError(error_msg)
