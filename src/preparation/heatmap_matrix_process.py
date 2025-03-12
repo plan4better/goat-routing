@@ -12,7 +12,8 @@ from src.core.isochrone import (
     network_to_grid_h3,
     prepare_network_isochrone,
 )
-from src.crud.crud_catchment_area import CRUDCatchmentArea, StreetNetworkUtil
+from src.core.street_network.street_network_util import StreetNetworkUtil
+from src.crud.crud_catchment_area import CRUDCatchmentArea
 from src.db.session import async_session
 from src.schemas.catchment_area import (
     CatchmentAreaRoutingTypeActiveMobility,
@@ -24,7 +25,10 @@ from src.schemas.catchment_area import (
     ICatchmentAreaCar,
 )
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
-from src.schemas.heatmap import MATRIX_RESOLUTION_CONFIG, ROUTING_COST_CONFIG
+from src.schemas.heatmap import (
+    MATRIX_RESOLUTION_CONFIG,
+    ROUTING_COST_CONFIG,
+)
 from src.utils import print_error, print_info
 
 
@@ -33,6 +37,7 @@ class HeatmapMatrixProcess:
         self,
         thread_id: int,
         chunk: list,
+        region_geofence: str,
         routing_type: (
             CatchmentAreaRoutingTypeActiveMobility | CatchmentAreaRoutingTypeCar
         ),
@@ -40,6 +45,7 @@ class HeatmapMatrixProcess:
         self.thread_id = thread_id
         self.routing_network = None
         self.chunk = chunk
+        self.region_geofence = region_geofence
         self.routing_type = routing_type
         self.INSERT_BATCH_SIZE = 800
         self.matrix_resolution = MATRIX_RESOLUTION_CONFIG[routing_type.value]
@@ -177,10 +183,11 @@ class HeatmapMatrixProcess:
             INSERT INTO basic.traveltime_matrix_{self.routing_type.value}_{settings.HEATMAP_MATRIX_DATE_SUFFIX} (
                 orig_id, dest_id, traveltime, h3_3
             )
-            VALUES {self.insert_string.rstrip(",")};
+            VALUES {self.insert_string.rstrip(",")}
+            ON CONFLICT (orig_id, traveltime, h3_3)
+            DO NOTHING;
         """
         await self.db_connection.execute(sql_insert_into_table)
-        await self.db_connection.commit()
 
     def run(self):
         # Manage event loop manually
@@ -202,7 +209,7 @@ class HeatmapMatrixProcess:
                 StreetNetworkUtil(self.db_connection).fetch(
                     edge_layer_id=settings.BASE_STREET_NETWORK,
                     node_layer_id=None,
-                    region_geofence_table=settings.NETWORK_REGION_TABLE,
+                    region_geofence=self.region_geofence,
                 ),
             )
 
@@ -367,5 +374,7 @@ class HeatmapMatrixProcess:
                 )
                 break
 
+        # Clean up database connection and event loop
+        event_loop.run_until_complete(self.db_connection.close())
         event_loop.close()
         print_info(f"Thread {self.thread_id} finished.")

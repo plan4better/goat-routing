@@ -26,10 +26,3 @@ MATRIX_RESOLUTION_CONFIG = {
     CatchmentAreaRoutingTypeActiveMobility.pedelec.value: 9,
     CatchmentAreaRoutingTypeCar.car.value: 8,
 }
-
-GEOFENCE_TABLE_CONFIG = {
-    CatchmentAreaRoutingTypeActiveMobility.walking.value: "basic.geofence_active_mobility",
-    CatchmentAreaRoutingTypeActiveMobility.bicycle.value: "basic.geofence_active_mobility",
-    CatchmentAreaRoutingTypeActiveMobility.pedelec.value: "basic.geofence_active_mobility",
-    CatchmentAreaRoutingTypeCar.car.value: "basic.geofence_active_mobility",
-}
