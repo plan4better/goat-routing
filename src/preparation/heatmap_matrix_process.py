@@ -1,7 +1,8 @@
+import asyncio
 import math
 
 import numpy as np
-import psycopg2
+from sqlalchemy.ext.asyncio import AsyncSession
 from tqdm import tqdm
 
 from src.core.config import settings
@@ -11,17 +12,24 @@ from src.core.isochrone import (
     network_to_grid_h3,
     prepare_network_isochrone,
 )
-from src.crud.crud_catchment_area_sync import CRUDCatchmentArea, FetchRoutingNetwork
+from src.core.street_network.street_network_util import StreetNetworkUtil
+from src.crud.crud_catchment_area import CRUDCatchmentArea
+from src.db.session import async_session
 from src.schemas.catchment_area import (
     CatchmentAreaRoutingTypeActiveMobility,
     CatchmentAreaRoutingTypeCar,
     CatchmentAreaStartingPoints,
+    CatchmentAreaStreetNetwork,
     CatchmentAreaType,
     ICatchmentAreaActiveMobility,
     ICatchmentAreaCar,
 )
 from src.schemas.error import BufferExceedsNetworkError, DisconnectedOriginError
-from src.schemas.heatmap import MATRIX_RESOLUTION_CONFIG, ROUTING_COST_CONFIG
+from src.schemas.heatmap import (
+    MATRIX_RESOLUTION_CONFIG,
+    ROUTING_COST_CONFIG,
+)
+from src.utils import print_error, print_info
 
 
 class HeatmapMatrixProcess:
@@ -29,6 +37,7 @@ class HeatmapMatrixProcess:
         self,
         thread_id: int,
         chunk: list,
+        region_geofence: str,
         routing_type: (
             CatchmentAreaRoutingTypeActiveMobility | CatchmentAreaRoutingTypeCar
         ),
@@ -36,6 +45,7 @@ class HeatmapMatrixProcess:
         self.thread_id = thread_id
         self.routing_network = None
         self.chunk = chunk
+        self.region_geofence = region_geofence
         self.routing_type = routing_type
         self.INSERT_BATCH_SIZE = 800
         self.matrix_resolution = MATRIX_RESOLUTION_CONFIG[routing_type.value]
@@ -50,7 +60,7 @@ class HeatmapMatrixProcess:
                 (settings.CATCHMENT_AREA_CAR_BUFFER_DEFAULT_SPEED * 1000) / 60
             )
 
-    def generate_multi_catchment_area_request(self, db_cursor, h3_6_index: str):
+    async def generate_multi_catchment_area_request(self, h3_6_index: str):
         """Produce a multi-catchment area request for a given H3_6 index and routing type."""
 
         # Get the centroid coordinates for all child cells of the supplied H3_6 parent cell
@@ -62,8 +72,7 @@ class HeatmapMatrixProcess:
             SELECT ST_X(geom), ST_Y(geom)
             FROM centroid;
         """
-        db_cursor.execute(sql_get_centroid)
-        result = db_cursor.fetchall()
+        result = (await self.db_connection.execute(sql_get_centroid)).fetchall()
 
         # Group centroid coordinates into latitude and longitude lists
         origin_lat = []
@@ -73,8 +82,8 @@ class HeatmapMatrixProcess:
             origin_lng.append(centroid[0])
 
         # Produce final ICatchmentAreaActiveMobility object (request for CRUDCatchmentArea)
-        return (
-            ICatchmentAreaActiveMobility(
+        if type(self.routing_type) == CatchmentAreaRoutingTypeActiveMobility:
+            return ICatchmentAreaActiveMobility(
                 starting_points=CatchmentAreaStartingPoints(
                     latitude=origin_lat,
                     longitude=origin_lng,
@@ -82,28 +91,36 @@ class HeatmapMatrixProcess:
                 routing_type=self.routing_type,
                 travel_cost=ROUTING_COST_CONFIG[self.routing_type.value],
                 scenario_id=None,
-                catchment_area_type=CatchmentAreaType.polygon,
-                polygon_difference=True,
-                result_table="",
-                layer_id=None,
-            )
-            if type(self.routing_type) == CatchmentAreaRoutingTypeActiveMobility
-            else ICatchmentAreaCar(
-                starting_points=CatchmentAreaStartingPoints(
-                    latitude=origin_lat,
-                    longitude=origin_lng,
+                street_network=CatchmentAreaStreetNetwork(
+                    edge_layer_project_id=settings.DEFAULT_STREET_NETWORK_EDGE_LAYER_PROJECT_ID,
+                    node_layer_project_id=settings.DEFAULT_STREET_NETWORK_NODE_LAYER_PROJECT_ID,
                 ),
-                routing_type=self.routing_type,
-                travel_cost=ROUTING_COST_CONFIG[self.routing_type.value],
-                scenario_id=None,
                 catchment_area_type=CatchmentAreaType.polygon,
                 polygon_difference=True,
                 result_table="",
                 layer_id=None,
             )
+        return ICatchmentAreaCar(
+            starting_points=CatchmentAreaStartingPoints(
+                latitude=origin_lat,
+                longitude=origin_lng,
+            ),
+            routing_type=CatchmentAreaRoutingTypeCar.car,
+            travel_cost=ROUTING_COST_CONFIG[self.routing_type.value],
+            scenario_id=None,
+            street_network=CatchmentAreaStreetNetwork(
+                edge_layer_project_id=settings.DEFAULT_STREET_NETWORK_EDGE_LAYER_PROJECT_ID,
+                node_layer_project_id=settings.DEFAULT_STREET_NETWORK_NODE_LAYER_PROJECT_ID,
+            ),
+            catchment_area_type=CatchmentAreaType.polygon,
+            polygon_difference=True,
+            result_table="",
+            layer_id=None,
         )
 
-    def get_cell_grid(self, db_cursor, h3_6_index: str):
+    async def get_cell_grid(self, h3_6_index: str):
+        """For an origin H3_6 index, fetch a buffered grid of potentially accessible cells."""
+
         sql_get_relevant_cells = f"""
             WITH cells AS (
                 SELECT h3_grid_disk(origin_h3_index, radius.value) AS h3_index
@@ -118,8 +135,7 @@ class HeatmapMatrixProcess:
                 FROM h3_cell_to_lat_lng(h3_index) AS point
             ) sub;
         """
-        db_cursor.execute(sql_get_relevant_cells)
-        result = db_cursor.fetchall()
+        result = (await self.db_connection.execute(sql_get_relevant_cells)).fetchall()
 
         h3_index = []
         x_centroids = np.empty(len(result))
@@ -132,6 +148,9 @@ class HeatmapMatrixProcess:
         return h3_index, x_centroids, y_centroids
 
     def add_to_insert_string(self, orig_id, dest_id, costs, orig_h3_3):
+        """Append latest results to the current insert batch."""
+
+        # Create a map of traveltime costs
         cost_map = {}
         for i in range(len(dest_id)):
             if math.isnan(costs[i]) or int(costs[i]) == 0:
@@ -141,11 +160,13 @@ class HeatmapMatrixProcess:
                 cost_map[cost] = []
             cost_map[cost].append(dest_id[i])
 
+        # Ensure a minimum traveltime of 1 minute for the origin cell is included in the cost map
         if 1 not in cost_map:
             cost_map[1] = [orig_id]
         elif orig_id not in cost_map[1]:
             cost_map[1].append(orig_id)
 
+        # Append the costs for this origin cell to the insert string
         for traveltime in cost_map:
             self.insert_string += f"""(
                 '{orig_id}'::h3index,
@@ -155,76 +176,104 @@ class HeatmapMatrixProcess:
             ),"""
             self.num_rows_queued += 1
 
-    def write_to_db(self, db_cursor, db_connection):
-        db_cursor.execute(
-            f"""
-                INSERT INTO basic.traveltime_matrix_{self.routing_type.value} (orig_id, dest_id, traveltime, h3_3)
-                VALUES {self.insert_string.rstrip(",")};
-            """
-        )
-        db_connection.commit()
+    async def write_to_db(self):
+        """Write the current insert batch to the database."""
+
+        sql_insert_into_table = f"""
+            INSERT INTO basic.traveltime_matrix_{self.routing_type.value}_{settings.HEATMAP_MATRIX_DATE_SUFFIX} (
+                orig_id, dest_id, traveltime, h3_3
+            )
+            VALUES {self.insert_string.rstrip(",")}
+            ON CONFLICT (orig_id, traveltime, h3_3)
+            DO NOTHING;
+        """
+        await self.db_connection.execute(sql_insert_into_table)
 
     def run(self):
-        db_connection = psycopg2.connect(settings.POSTGRES_DATABASE_URI)
-        db_cursor = db_connection.cursor()
+        # Manage event loop manually
+        event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(event_loop)
 
-        crud_catchment_area = CRUDCatchmentArea(db_connection, db_cursor)
+        # Initialize database connection unique to this process
+        self.db_connection: AsyncSession = async_session()
+
+        # Initialize the catchment area CRUD helper
+        crud_catchment_area = CRUDCatchmentArea(
+            db_connection=self.db_connection,
+            redis=None,
+        )
 
         # Fetch routing network (processed segments) and load into memory
         if self.routing_network is None:
-            self.routing_network = FetchRoutingNetwork(db_cursor).fetch()
+            self.routing_network, _ = event_loop.run_until_complete(
+                StreetNetworkUtil(self.db_connection).fetch(
+                    edge_layer_id=settings.BASE_STREET_NETWORK,
+                    node_layer_id=None,
+                    region_geofence=self.region_geofence,
+                ),
+            )
 
         for index in tqdm(
             range(len(self.chunk)), desc=f"Thread {self.thread_id}", unit=" cell"
         ):
+            # Fetch the current H3_6 index from the chunk assigned to this process
             h3_6_index = self.chunk[index]
 
-            catchment_area_request = self.generate_multi_catchment_area_request(
-                db_cursor=db_cursor,
-                h3_6_index=h3_6_index,
+            # Produce a catchment area request for the current H3_6 index
+            catchment_area_request = event_loop.run_until_complete(
+                self.generate_multi_catchment_area_request(h3_6_index)
             )
 
+            # Read & process routing network to extract relevant sub-network
+            input_table = None
             sub_routing_network = None
             origin_connector_ids = None
             origin_point_cell_index = None
             origin_point_h3_3 = None
             try:
                 # Create input table for catchment area origin points
-                input_table, num_points = crud_catchment_area.create_input_table(
-                    catchment_area_request
+                input_table, num_points = event_loop.run_until_complete(
+                    crud_catchment_area.create_input_table(catchment_area_request),
                 )
 
                 # Read & process routing network to extract relevant sub-network
                 (
                     sub_routing_network,
+                    network_modifications_table,
                     origin_connector_ids,
                     origin_point_cell_index,
                     origin_point_h3_3,
-                ) = crud_catchment_area.read_network(
-                    self.routing_network,
-                    catchment_area_request,
-                    input_table,
-                    num_points,
-                    self.matrix_resolution,
+                ) = event_loop.run_until_complete(
+                    crud_catchment_area.read_network(
+                        self.routing_network,
+                        catchment_area_request,
+                        input_table,
+                        num_points,
+                        self.matrix_resolution,
+                    )
                 )
 
                 # Delete input table for catchment area origin points
-                crud_catchment_area.delete_input_table(input_table)
+                event_loop.run_until_complete(
+                    crud_catchment_area.drop_temp_tables(
+                        input_table, network_modifications_table
+                    ),
+                )
             except Exception as e:
-                db_connection.rollback()
+                event_loop.run_until_complete(self.db_connection.rollback())
                 if isinstance(e, DisconnectedOriginError):
-                    print(
-                        f"Thread {self.thread_id}: Skipping {h3_6_index} due to disconnected origin. Starting points: [temporal.{input_table}]"
+                    print_error(
+                        f"Thread {self.thread_id}: Skipping {h3_6_index} due to disconnected origin. Starting points table: [{input_table}]"
                     )
                     continue
                 elif isinstance(e, BufferExceedsNetworkError):
-                    print(
-                        f"Thread {self.thread_id}: Skipping {h3_6_index} due to buffer exceeding network. Starting points: [temporal.{input_table}]"
+                    print_error(
+                        f"Thread {self.thread_id}: Skipping {h3_6_index} due to buffer exceeding network. Starting points table: [{input_table}]"
                     )
                     continue
                 else:
-                    print(e)
-                    print(
+                    print_error(str(e))
+                    print_error(
                         f"Thread {self.thread_id}: Error processing {h3_6_index}, exiting."
                     )
                     break
@@ -240,6 +289,7 @@ class HeatmapMatrixProcess:
             else:
                 zoom = 10  # Use lower resolution grid for car catchment areas
             try:
+                # Prepare network for isochrone computation
                 (
                     edges_source,
                     edges_target,
@@ -253,6 +303,7 @@ class HeatmapMatrixProcess:
                     geom_array,
                 ) = prepare_network_isochrone(edge_network_input=sub_routing_network)
 
+                # Construct adjacency list for Dijkstra routing
                 adj_list = construct_adjacency_list_(
                     len(unordered_map),
                     edges_source,
@@ -261,6 +312,7 @@ class HeatmapMatrixProcess:
                     edges_reverse_cost,
                 )
 
+                # Perform Dijkstra routing to compute traveltime costs
                 start_vertices_ids = np.array(
                     [unordered_map[v] for v in origin_connector_ids]
                 )
@@ -271,18 +323,15 @@ class HeatmapMatrixProcess:
                     False,
                 )
 
-                (
-                    h3_index,
-                    h3_centroid_x,
-                    h3_centroid_y,
-                ) = self.get_cell_grid(
-                    db_cursor,
-                    h3_6_index,
+                # Fetch a buffered H3 grid of potentially accessible cells
+                (h3_index, h3_centroid_x, h3_centroid_y) = (
+                    event_loop.run_until_complete(self.get_cell_grid(h3_6_index))
                 )
 
                 self.insert_string = ""
                 self.num_rows_queued = 0
                 for i in range(len(origin_point_cell_index)):
+                    # Interpolate traveltime costs from network to H3 grid
                     mapped_cost = network_to_grid_h3(
                         extent=extent,
                         zoom=zoom,
@@ -300,6 +349,7 @@ class HeatmapMatrixProcess:
                         is_distance_based=False,
                     )
 
+                    # Append results to the current batch
                     self.add_to_insert_string(
                         orig_id=origin_point_cell_index[i],
                         dest_id=h3_index,
@@ -307,25 +357,24 @@ class HeatmapMatrixProcess:
                         orig_h3_3=origin_point_h3_3[i],
                     )
 
+                    # Commit the current batch to the database if batch size is reached
                     if (
                         self.num_rows_queued >= self.INSERT_BATCH_SIZE
                         or i == len(origin_point_cell_index) - 1
                     ):
-                        self.write_to_db(
-                            db_cursor,
-                            db_connection,
-                        )
+                        event_loop.run_until_complete(self.write_to_db())
                         self.insert_string = ""
                         self.num_rows_queued = 0
 
             except Exception as e:
-                db_connection.rollback()
-                print(e)
-                print(
+                event_loop.run_until_complete(self.db_connection.rollback())
+                print_error(str(e))
+                print_error(
                     f"Thread {self.thread_id}: Error processing {h3_6_index}, exiting."
                 )
                 break
 
-        db_connection.close()
-
-        print(f"Thread {self.thread_id} finished.")
+        # Clean up database connection and event loop
+        event_loop.run_until_complete(self.db_connection.close())
+        event_loop.close()
+        print_info(f"Thread {self.thread_id} finished.")

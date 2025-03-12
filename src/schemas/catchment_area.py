@@ -31,37 +31,33 @@ CONNECTOR_DATA_SCHEMA = {
 }
 
 VALID_WALKING_CLASSES = [
+    "primary",
     "secondary",
     "tertiary",
     "residential",
     "living_street",
     "trunk",
     "unclassified",
-    "parking_aisle",
-    "driveway",
-    "alley",
+    "service",
     "pedestrian",
     "footway",
-    "sidewalk",
-    "crosswalk",
     "steps",
+    "path",
     "track",
     "bridleway",
     "unknown",
 ]
 
 VALID_BICYCLE_CLASSES = [
+    "primary",
     "secondary",
     "tertiary",
     "residential",
     "living_street",
     "trunk",
     "unclassified",
-    "parking_aisle",
-    "driveway",
-    "alley",
+    "service",
     "pedestrian",
-    "crosswalk",
     "track",
     "cycleway",
     "bridleway",
@@ -77,9 +73,7 @@ VALID_CAR_CLASSES = [
     "living_street",
     "trunk",
     "unclassified",
-    "parking_aisle",
-    "driveway",
-    "alley",
+    "service",
     "track",
 ]
 

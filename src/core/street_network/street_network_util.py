@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import settings
 from src.core.street_network.street_network_cache import StreetNetworkCache
 from src.schemas.catchment_area import CONNECTOR_DATA_SCHEMA, SEGMENT_DATA_SCHEMA
+from src.utils import print_error, print_info, print_warning
 
 
 class StreetNetworkUtil:
@@ -17,7 +18,7 @@ class StreetNetworkUtil:
     async def _get_user_id(self, layer_id: UUID):
         """Get the user ID of the specified layer ID."""
 
-        user_id: UUID = None
+        user_id: UUID | None = None
 
         try:
             # Get the user ID of the layer
@@ -30,19 +31,21 @@ class StreetNetworkUtil:
             )
             user_id = UUID(str(result.fetchone()[0]))
         except Exception:
-            raise ValueError(f"Could not fetch user ID for layer ID {layer_id}.")
+            error_msg = f"Could not fetch user ID for layer ID {layer_id}."
+            print_error(error_msg)
+            raise ValueError(error_msg)
 
         return user_id
 
     async def _get_street_network_tables(
         self,
-        edge_layer_id: UUID,
-        node_layer_id: UUID,
+        edge_layer_id: UUID | None,
+        node_layer_id: UUID | None,
     ):
         """Get table names and layer IDs of the edge and node tables."""
 
-        edge_table: str = None
-        node_table: str = None
+        edge_table: str | None = None
+        node_table: str | None = None
 
         # Get edge table name if a layer ID is specified
         if edge_layer_id:
@@ -53,9 +56,11 @@ class StreetNetworkUtil:
                 # Produce the edge table name
                 edge_table = f"{settings.USER_DATA_SCHEMA}.street_network_line_{str(user_id).replace('-', '')}"
             except Exception:
-                raise ValueError(
+                error_msg = (
                     f"Could not fetch edge table name for layer ID {edge_layer_id}."
                 )
+                print_error(error_msg)
+                raise ValueError(error_msg)
 
         # Get node table name if a layer ID is specified
         if node_layer_id:
@@ -66,20 +71,22 @@ class StreetNetworkUtil:
                 # Produce the node table name
                 node_table = f"{settings.USER_DATA_SCHEMA}.street_network_point_{str(user_id).replace('-', '')}"
             except Exception:
-                raise ValueError(
+                error_msg = (
                     f"Could not fetch node table name for layer ID {node_layer_id}."
                 )
+                print_error(error_msg)
+                raise ValueError(error_msg)
 
         return edge_table, node_table
 
-    async def _get_street_network_region_h3_3_cells(self, region_geofence_table: str):
+    async def _get_street_network_region_h3_3_cells(self, region_geofence: str):
         """Get list of H3_3 cells covering the street network region."""
 
         h3_3_cells = []
         try:
             sql_fetch_h3_3_cells = f"""
                 WITH region AS (
-                    SELECT ST_Union(geom) AS geom FROM {region_geofence_table}
+                    {region_geofence}
                 )
                 SELECT g.h3_short FROM region r,
                 LATERAL basic.fill_polygon_h3_3(r.geom) g;
@@ -91,19 +98,29 @@ class StreetNetworkUtil:
             for h3_short in result:
                 h3_3_cells.append(h3_short[0])
         except Exception:
-            raise ValueError(
-                f"Could not fetch H3_3 grid for street network geofence {settings.NETWORK_REGION_TABLE}."
-            )
+            error_msg = f"Could not fetch H3_3 grid for street network geofence {region_geofence}."
+            print_error(error_msg)
+            raise ValueError(error_msg)
 
         return h3_3_cells
 
     async def fetch(
         self,
-        edge_layer_id: UUID,
-        node_layer_id: UUID,
-        region_geofence_table: str,
+        edge_layer_id: UUID | None,
+        node_layer_id: UUID | None,
+        region_geofence: str,
     ):
         """Fetch street network from specified layer and load into Polars dataframes."""
+
+        print_info(
+            f"Fetching street network data for geofence region: {region_geofence}"
+        )
+
+        # Inform the user if dev mode is disabled, debugging print statements are suppressed
+        if settings.ENVIRONMENT != "dev":
+            print_warning(
+                f"Running in enviroment: {settings.ENVIRONMENT}, debug messages will not be shown."
+            )
 
         # Street network is stored as a dictionary of Polars dataframes, with the H3_3 index as the key
         street_network_edge: dict = {}
@@ -114,7 +131,7 @@ class StreetNetworkUtil:
 
         # Get H3_3 cells covering the street network region
         street_network_region_h3_3_cells = (
-            await self._get_street_network_region_h3_3_cells(region_geofence_table)
+            await self._get_street_network_region_h3_3_cells(region_geofence)
         )
 
         # Get table names and layer IDs of the edge and node tables
@@ -134,9 +151,14 @@ class StreetNetworkUtil:
                         edge_df = street_network_cache.read_edge_cache(
                             edge_layer_id, h3_short
                         )
+
+                        # Confirm that the edge data is not empty
+                        if edge_df.is_empty():
+                            error_msg = f"Edge data for H3_3 cell {h3_short} is empty or corrupted, please re-fetch."
+                            raise ValueError(error_msg)
                     else:
                         if settings.ENVIRONMENT == "dev":
-                            print(
+                            print_info(
                                 f"Fetching street network edge data for H3_3 cell {h3_short}"
                             )
 
@@ -174,7 +196,7 @@ class StreetNetworkUtil:
                         )
                     else:
                         if settings.ENVIRONMENT == "dev":
-                            print(
+                            print_info(
                                 f"Fetching street network node data for H3_3 cell {h3_short}"
                             )
 
@@ -199,25 +221,27 @@ class StreetNetworkUtil:
                     street_network_node[h3_short] = node_df
                     street_network_size += node_df.estimated_size("gb")
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to fetch street network data from database, error: {e}"
-            )
+            error_msg = f"Failed to fetch street network data from cache or database, error: {e}"
+            print_error(error_msg)
+            raise RuntimeError(error_msg)
 
         # Raise error if a edge layer project ID is specified but no edge data is fetched
         if edge_layer_id is not None and len(street_network_edge) == 0:
-            raise RuntimeError(
-                f"Failed to fetch street network edge data for layer project ID {edge_layer_id}."
-            )
+            error_msg = f"Failed to fetch street network edge data for layer project ID {edge_layer_id}."
+            print_error(error_msg)
+            raise RuntimeError(error_msg)
 
         # Raise error if a node layer project ID is specified but no node data is fetched
         if node_layer_id is not None and len(street_network_node) == 0:
-            raise RuntimeError(
-                f"Failed to fetch street network node data for layer project ID {node_layer_id}."
-            )
+            error_msg = f"Failed to fetch street network node data for layer project ID {node_layer_id}."
+            print_error(error_msg)
+            raise RuntimeError(error_msg)
 
         end_time = time.time()
 
-        print(f"Street network load time: {round((end_time - start_time) / 60, 1)} min")
-        print(f"Street network in-memory size: {round(street_network_size, 1)} GB")
+        print_info(
+            f"Street network load time: {round((end_time - start_time) / 60, 1)} min"
+        )
+        print_info(f"Street network in-memory size: {round(street_network_size, 1)} GB")
 
         return street_network_edge, street_network_node
