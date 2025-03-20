@@ -75,7 +75,7 @@ class CRUDCatchmentArea:
         sql_get_relevant_cells = text(
             f"""
             WITH point AS (
-                SELECT geom FROM "{input_table}" LIMIT {num_points}
+                SELECT geom FROM {input_table} LIMIT {num_points}
             ),
             buffer AS (
                 SELECT ST_Buffer(point.geom::geography, {buffer_dist})::geometry AS geom
@@ -323,13 +323,14 @@ class CRUDCatchmentArea:
         """Create the input table for the catchment area calculation."""
 
         # Generate random table name
-        table_name = f"temporal.{str(uuid.uuid4()).replace('-', '_')}"
+        table_name = str(uuid.uuid4()).replace("-", "_")
+        table_name = f'temporal."{table_name}"'
 
         # Create temporary table for storing catchment area starting points
         await self.db_connection.execute(
             text(
                 f"""
-                CREATE TABLE "{table_name}" (
+                CREATE TABLE {table_name} (
                     id serial PRIMARY KEY,
                     geom geometry(Point, 4326)
                 );
@@ -342,28 +343,44 @@ class CRUDCatchmentArea:
         for i in range(len(obj_in.starting_points.latitude)):
             latitude = obj_in.starting_points.latitude[i]
             longitude = obj_in.starting_points.longitude[i]
-            insert_string += (
-                f"(ST_SetSRID(ST_MakePoint({longitude}, {latitude}), 4326)),"
-            )
+            insert_string += f"SELECT ST_SetSRID(ST_MakePoint({longitude}, {latitude}), 4326) AS geom UNION "
         await self.db_connection.execute(
             text(
                 f"""
-                INSERT INTO "{table_name}" (geom)
-                VALUES {insert_string.rstrip(",")};
+                INSERT INTO {table_name} (geom)
+                WITH clusters AS (
+                    SELECT
+                        ST_ClusterDBSCAN(
+                            ST_Transform(geom, 3857),
+                            eps := 5,
+                            minpoints := 1
+                        ) OVER () AS cluster_id,
+                        geom
+                    FROM (
+                        {insert_string.rstrip("UNION ")}
+                    ) AS points
+                )
+                SELECT ST_Centroid(ST_Collect(geom)) AS merged_geom
+                FROM clusters
+                GROUP BY cluster_id;
             """
             )
         )
 
         await self.db_connection.commit()
 
-        return table_name, len(obj_in.starting_points.latitude)
+        # Get actual count of starting points
+        sql_get_count = text(f"SELECT COUNT(*) FROM {table_name};")
+        num_points = (await self.db_connection.execute(sql_get_count)).fetchone()[0]
+
+        return table_name, num_points
 
     async def drop_temp_tables(
         self, input_table: str, network_modifications_table: str
     ):
         """Delete the temporary input and network modifications tables."""
 
-        await self.db_connection.execute(text(f'DROP TABLE "{input_table}";'))
+        await self.db_connection.execute(text(f"DROP TABLE {input_table};"))
         if network_modifications_table is not None:
             await self.db_connection.execute(
                 text(f'DROP TABLE "{network_modifications_table}";')

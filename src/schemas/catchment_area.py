@@ -44,6 +44,7 @@ VALID_WALKING_CLASSES = [
     "steps",
     "path",
     "track",
+    "cycleway",
     "bridleway",
     "unknown",
 ]
