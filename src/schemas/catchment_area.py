@@ -59,6 +59,7 @@ VALID_BICYCLE_CLASSES = [
     "unclassified",
     "service",
     "pedestrian",
+    "path",
     "track",
     "cycleway",
     "bridleway",
