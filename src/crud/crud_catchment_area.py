@@ -18,6 +18,7 @@ from src.schemas.catchment_area import (
     VALID_BICYCLE_CLASSES,
     VALID_CAR_CLASSES,
     VALID_WALKING_CLASSES,
+    BICYCLE_SPEED_FOOTWAYS,
     CatchmentAreaRoutingTypeActiveMobility,
     CatchmentAreaRoutingTypeCar,
     CatchmentAreaTravelTimeCostActiveMobility,
@@ -400,6 +401,7 @@ class CRUDCatchmentArea:
                 pl.when(
                     (pl.col("class_") != "pedestrian")
                     & (pl.col("class_") != "crosswalk")
+                    & (pl.col("class_") != "footway")
                 )
                 .then(
                     (
@@ -409,12 +411,13 @@ class CRUDCatchmentArea:
                     / speed
                 )
                 .otherwise(
-                    pl.col("length_m") / speed
+                    pl.col("length_m") / (BICYCLE_SPEED_FOOTWAYS / 3.6)
                 )  # This calculation is invoked when the segment class requires cyclists to walk their bicycle
                 .alias("cost"),
                 pl.when(
                     (pl.col("class_") != "pedestrian")
                     & (pl.col("class_") != "crosswalk")
+                    & (pl.col("class_") != "footway")
                 )
                 .then(
                     (
@@ -428,7 +431,7 @@ class CRUDCatchmentArea:
                     / speed
                 )
                 .otherwise(
-                    pl.col("length_m") / speed
+                    pl.col("length_m") / (BICYCLE_SPEED_FOOTWAYS / 3.6)
                 )  # This calculation is invoked when the segment class requires cyclists to walk their bicycle
                 .alias("reverse_cost"),
             )
@@ -437,19 +440,21 @@ class CRUDCatchmentArea:
                 pl.when(
                     (pl.col("class_") != "pedestrian")
                     & (pl.col("class_") != "crosswalk")
+                    & (pl.col("class_") != "footway")
                 )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
-                    pl.col("length_m") / speed
+                    pl.col("length_m") / (BICYCLE_SPEED_FOOTWAYS / 3.6)
                 )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
                 .alias("cost"),
                 pl.when(
                     (pl.col("class_") != "pedestrian")
                     & (pl.col("class_") != "crosswalk")
+                    & (pl.col("class_") != "footway")
                 )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
-                    pl.col("length_m") / speed
+                    pl.col("length_m") / (BICYCLE_SPEED_FOOTWAYS / 3.6)
                 )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
                 .alias("reverse_cost"),
             )

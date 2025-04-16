@@ -59,12 +59,14 @@ VALID_BICYCLE_CLASSES = [
     "unclassified",
     "service",
     "pedestrian",
+    "footway",
     "path",
     "track",
     "cycleway",
     "bridleway",
     "unknown",
 ]
+BICYCLE_SPEED_FOOTWAYS = 5
 
 VALID_CAR_CLASSES = [
     "motorway",
