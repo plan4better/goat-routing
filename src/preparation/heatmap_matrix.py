@@ -11,10 +11,11 @@ from src.utils import print_info
     Instructions for use:
     1. Set ROUTING_TYPE to the desired routing type / mode.
     2. Set NUM_THREADS to the desired number of threads.
-    3. Set TRAVELTIME_MATRIX_REGIONS to al list of the desired regions to compute the heatmap matrix for.
-    4. Set HEATMAP_MATRIX_DATE_SUFFIX in src/core/config.py to the date of computation.
-    5. Ensure you're connecting to the correct database.
-    6. Run the preparation script via the pre-defined launch config.
+    3. Set REPLACE_EXISTING_TABLE to True if you want to drop the existing table and create a new one.
+    4. Set TRAVELTIME_MATRIX_REGIONS to al list of the desired regions to compute the heatmap matrix for.
+    5. Set HEATMAP_MATRIX_DATE_SUFFIX in src/core/config.py to the date of computation.
+    6. Ensure you're connecting to the correct database.
+    7. Run the preparation script via the pre-defined launch config.
 
     Note: Each process currently takes a long time to process its first H3_6 cell, subsequent cells are much faster.
 """
@@ -25,6 +26,7 @@ class HeatmapMatrixPreparation:
         # User configurable
         self.ROUTING_TYPE = CatchmentAreaRoutingTypeActiveMobility.walking
         self.NUM_THREADS = 12
+        self.REPLACE_EXISTING_TABLE = False
 
         # Current heamtap matrix regions deployed in GOAT
         self.TRAVELTIME_MATRIX_REGIONS = [
@@ -131,7 +133,8 @@ class HeatmapMatrixPreparation:
         db_cursor = db_connection.cursor()
 
         # Initialize traveltime matrix table
-        self.initialize_traveltime_matrix_table(db_cursor, db_connection)
+        if self.REPLACE_EXISTING_TABLE:
+            self.initialize_traveltime_matrix_table(db_cursor, db_connection)
 
         for index in range(len(self.TRAVELTIME_MATRIX_REGIONS)):
             print_info(

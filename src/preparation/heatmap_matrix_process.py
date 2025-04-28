@@ -188,6 +188,7 @@ class HeatmapMatrixProcess:
             DO NOTHING;
         """
         await self.db_connection.execute(sql_insert_into_table)
+        await self.db_connection.commit()
 
     def run(self):
         # Manage event loop manually
