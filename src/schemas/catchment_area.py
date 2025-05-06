@@ -68,6 +68,24 @@ VALID_BICYCLE_CLASSES = [
 ]
 BICYCLE_SPEED_FOOTWAYS = 5
 
+VALID_WHEELCHAIR_CLASSES = [
+    "primary",
+    "secondary",
+    "tertiary",
+    "residential",
+    "living_street",
+    "trunk",
+    "unclassified",
+    "service",
+    "pedestrian",
+    "footway",
+    "path",
+    "track",
+    "cycleway",
+    "bridleway",
+    "unknown",
+]
+
 VALID_CAR_CLASSES = [
     "motorway",
     "primary",
@@ -111,6 +129,7 @@ class CatchmentAreaRoutingTypeActiveMobility(str, Enum):
     walking = "walking"
     bicycle = "bicycle"
     pedelec = "pedelec"
+    wheelchair = "wheelchair"
 
 
 class CatchmentAreaRoutingTypeCar(str, Enum):

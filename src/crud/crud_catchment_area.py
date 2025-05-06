@@ -18,6 +18,7 @@ from src.schemas.catchment_area import (
     VALID_BICYCLE_CLASSES,
     VALID_CAR_CLASSES,
     VALID_WALKING_CLASSES,
+    VALID_WHEELCHAIR_CLASSES,
     BICYCLE_SPEED_FOOTWAYS,
     CatchmentAreaRoutingTypeActiveMobility,
     CatchmentAreaRoutingTypeCar,
@@ -49,13 +50,23 @@ class CRUDCatchmentArea:
 
         # Get valid segment classes based on transport mode
         if type(obj_in) is ICatchmentAreaActiveMobility:
-            valid_segment_classes = (
-                VALID_WALKING_CLASSES
-                if obj_in.routing_type == "walking"
-                else VALID_BICYCLE_CLASSES
-            )
+            if obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.walking:
+                valid_segment_classes = VALID_WALKING_CLASSES
+            elif obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.bicycle:
+                valid_segment_classes = VALID_BICYCLE_CLASSES
+            elif obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.wheelchair:
+                valid_segment_classes = VALID_WHEELCHAIR_CLASSES
+            else:
+                raise ValueError(
+                    f"Invalid routing type: {obj_in.routing_type}"
+                )
         else:
-            valid_segment_classes = VALID_CAR_CLASSES
+            if obj_in.routing_type == CatchmentAreaRoutingTypeCar.car:
+                valid_segment_classes = VALID_CAR_CLASSES
+            else:
+                raise ValueError(
+                    f"Invalid routing type: {obj_in.routing_type}"
+                )
 
         # Compute buffer distance for identifying relevant H3_6 cells
         if type(obj_in.travel_cost) is CatchmentAreaTravelTimeCostActiveMobility:
@@ -401,7 +412,6 @@ class CRUDCatchmentArea:
                 pl.when(
                     (pl.col("class_") != "pedestrian")
                     & (pl.col("class_") != "crosswalk")
-                    & (pl.col("class_") != "footway")
                 )
                 .then(
                     (
@@ -417,7 +427,6 @@ class CRUDCatchmentArea:
                 pl.when(
                     (pl.col("class_") != "pedestrian")
                     & (pl.col("class_") != "crosswalk")
-                    & (pl.col("class_") != "footway")
                 )
                 .then(
                     (
@@ -440,7 +449,6 @@ class CRUDCatchmentArea:
                 pl.when(
                     (pl.col("class_") != "pedestrian")
                     & (pl.col("class_") != "crosswalk")
-                    & (pl.col("class_") != "footway")
                 )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
@@ -450,13 +458,17 @@ class CRUDCatchmentArea:
                 pl.when(
                     (pl.col("class_") != "pedestrian")
                     & (pl.col("class_") != "crosswalk")
-                    & (pl.col("class_") != "footway")
                 )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
                     pl.col("length_m") / (BICYCLE_SPEED_FOOTWAYS / 3.6)
                 )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
                 .alias("reverse_cost"),
+            )
+        elif mode == CatchmentAreaRoutingTypeActiveMobility.wheelchair:
+            return sub_network.with_columns(
+                (pl.col("length_m") / speed).alias("cost"),
+                (pl.col("length_m") / speed).alias("reverse_cost"),
             )
         elif mode == CatchmentAreaRoutingTypeCar.car:
             return sub_network.with_columns(
@@ -564,8 +576,13 @@ class CRUDCatchmentArea:
             """
             )
 
-            await self.db_connection.execute(sql_insert_into_table)
-            await self.db_connection.commit()
+            try:
+                await self.db_connection.execute(sql_insert_into_table)
+                await self.db_connection.commit()
+            except Exception as e:
+                raise Exception(
+                    f"Error inserting into table {obj_in.result_table}: {str(e).splitlines()[:5]}"
+                ) from e
         elif obj_in.catchment_area_type == "network":
             # Save catchment area network data
             for batch_index in range(
@@ -595,8 +612,13 @@ class CRUDCatchmentArea:
                     VALUES {insert_string.rstrip(",")};
                 """
                 )
-                await self.db_connection.execute(insert_string)
-                await self.db_connection.commit()
+                try:
+                    await self.db_connection.execute(insert_string)
+                    await self.db_connection.commit()
+                except Exception as e:
+                    raise Exception(
+                        f"Error inserting into table {obj_in.result_table}: {str(e).splitlines()[:5]}"
+                    ) from e
         else:
             # Save catchment area grid data
             for batch_index in range(
@@ -624,8 +646,13 @@ class CRUDCatchmentArea:
                         VALUES {insert_string.rstrip(",")};
                     """
                     )
-                    await self.db_connection.execute(insert_string)
-                    await self.db_connection.commit()
+                    try:
+                        await self.db_connection.execute(insert_string)
+                        await self.db_connection.commit()
+                    except Exception as e:
+                        raise Exception(
+                            f"Error inserting into table {obj_in.result_table}: {str(e).splitlines()[:5]}"
+                        ) from e
 
     async def run(self, obj_in: ICatchmentAreaActiveMobility | ICatchmentAreaCar):
         """Compute catchment areas for the given request parameters."""
