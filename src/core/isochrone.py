@@ -743,6 +743,7 @@ def compute_isochrone(
                 }
                 for idx in edges_length
                 if distances[edges_target[idx]] != np.inf
+                and distances[edges_target[idx]] <= travel_time
             ],
         }
     else:

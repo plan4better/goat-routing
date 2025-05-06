@@ -531,6 +531,15 @@ class CRUDCatchmentArea:
     async def save_result(self, obj_in, shapes, network, grid_index, grid):
         """Save the result of the catchment area computation to the database."""
 
+        # Compute step size for the catchment area
+        if type(obj_in.travel_cost) in [
+            CatchmentAreaTravelTimeCostActiveMobility,
+            CatchmentAreaTravelTimeCostMotorizedMobility,
+        ]:
+            step_size = obj_in.travel_cost.max_traveltime / obj_in.travel_cost.steps
+        else:
+            step_size = obj_in.travel_cost.max_distance / obj_in.travel_cost.steps
+
         if obj_in.catchment_area_type == "polygon":
             # Save catchment area geometry data (shapes)
             shapes = shapes["full"]
@@ -597,7 +606,7 @@ class CRUDCatchmentArea:
                     ),
                 ):
                     coordinates = network["features"][i]["geometry"]["coordinates"]
-                    cost = network["features"][i]["properties"]["cost"]
+                    cost = math.ceil(network["features"][i]["properties"]["cost"] / step_size) * step_size
                     points_string = ""
                     for pair in coordinates:
                         points_string += f"ST_MakePoint({pair[0]}, {pair[1]}),"
@@ -631,11 +640,12 @@ class CRUDCatchmentArea:
                 ):
                     if math.isnan(grid[i]):
                         continue
+                    cost = math.ceil(grid[i] / step_size) * step_size
                     insert_string += f"""(
                         '{obj_in.layer_id}',
                         ST_SetSRID(h3_cell_to_boundary('{grid_index[i]}'::h3index)::geometry, 4326),
                         '{grid_index[i]}',
-                        ROUND({grid[i]})
+                        ROUND({cost})
                     ),"""
 
                 # Insert only if any grid data was added to the query in this batch
