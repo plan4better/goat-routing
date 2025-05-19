@@ -54,6 +54,8 @@ class CRUDCatchmentArea:
                 valid_segment_classes = VALID_WALKING_CLASSES
             elif obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.bicycle:
                 valid_segment_classes = VALID_BICYCLE_CLASSES
+            elif obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.pedelec:
+                valid_segment_classes = VALID_BICYCLE_CLASSES
             elif obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.wheelchair:
                 valid_segment_classes = VALID_WHEELCHAIR_CLASSES
             else:
