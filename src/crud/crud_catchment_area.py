@@ -18,6 +18,8 @@ from src.schemas.catchment_area import (
     VALID_BICYCLE_CLASSES,
     VALID_CAR_CLASSES,
     VALID_WALKING_CLASSES,
+    VALID_WHEELCHAIR_CLASSES,
+    BICYCLE_SPEED_FOOTWAYS,
     CatchmentAreaRoutingTypeActiveMobility,
     CatchmentAreaRoutingTypeCar,
     CatchmentAreaTravelTimeCostActiveMobility,
@@ -31,7 +33,7 @@ from src.utils import format_value_null_sql
 
 
 class CRUDCatchmentArea:
-    def __init__(self, db_connection: AsyncSession, redis: Redis) -> None:
+    def __init__(self, db_connection: AsyncSession, redis: Redis | None) -> None:
         self.db_connection = db_connection
         self.redis = redis
         self.routing_network = None
@@ -42,18 +44,31 @@ class CRUDCatchmentArea:
         obj_in: ICatchmentAreaActiveMobility | ICatchmentAreaCar,
         input_table: str,
         num_points: int,
+        origin_point_cell_resolution: int = 10,
     ) -> Any:
         """Read relevant sub-network for catchment area calculation from polars dataframe."""
 
         # Get valid segment classes based on transport mode
         if type(obj_in) is ICatchmentAreaActiveMobility:
-            valid_segment_classes = (
-                VALID_WALKING_CLASSES
-                if obj_in.routing_type == "walking"
-                else VALID_BICYCLE_CLASSES
-            )
+            if obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.walking:
+                valid_segment_classes = VALID_WALKING_CLASSES
+            elif obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.bicycle:
+                valid_segment_classes = VALID_BICYCLE_CLASSES
+            elif obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.pedelec:
+                valid_segment_classes = VALID_BICYCLE_CLASSES
+            elif obj_in.routing_type == CatchmentAreaRoutingTypeActiveMobility.wheelchair:
+                valid_segment_classes = VALID_WHEELCHAIR_CLASSES
+            else:
+                raise ValueError(
+                    f"Invalid routing type: {obj_in.routing_type}"
+                )
         else:
-            valid_segment_classes = VALID_CAR_CLASSES
+            if obj_in.routing_type == CatchmentAreaRoutingTypeCar.car:
+                valid_segment_classes = VALID_CAR_CLASSES
+            else:
+                raise ValueError(
+                    f"Invalid routing type: {obj_in.routing_type}"
+                )
 
         # Compute buffer distance for identifying relevant H3_6 cells
         if type(obj_in.travel_cost) is CatchmentAreaTravelTimeCostActiveMobility:
@@ -74,7 +89,7 @@ class CRUDCatchmentArea:
         sql_get_relevant_cells = text(
             f"""
             WITH point AS (
-                SELECT geom FROM "{input_table}" LIMIT {num_points}
+                SELECT geom FROM {input_table} LIMIT {num_points}
             ),
             buffer AS (
                 SELECT ST_Buffer(point.geom::geography, {buffer_dist})::geometry AS geom
@@ -113,6 +128,22 @@ class CRUDCatchmentArea:
                 pl.col("h3_6").is_in(h3_6_cells)
                 & pl.col("class_").is_in(valid_segment_classes)
             )
+
+            # For active mobility routing, consider "primary" edges only if they have appropriate speed limits
+            if type(obj_in) is ICatchmentAreaActiveMobility:
+                sub_df = sub_df.filter(
+                    (pl.col("class_") != "primary")
+                    | (
+                        (
+                            pl.col("maxspeed_forward").is_not_null()
+                            & (pl.col("maxspeed_forward") <= 50)
+                        )
+                        | (
+                            pl.col("maxspeed_backward").is_not_null()
+                            & (pl.col("maxspeed_backward") <= 50)
+                        )
+                    )
+                )
             if sub_network.width > 0:
                 sub_network.extend(sub_df)
             else:
@@ -189,6 +220,9 @@ class CRUDCatchmentArea:
         origin_point_cell_index = []
         origin_point_h3_3 = []
         segments_to_discard = []
+        additional_filters = ""
+        if type(obj_in) is ICatchmentAreaActiveMobility:
+            additional_filters = "AND (class_ != ''primary'' OR s.maxspeed_forward <= 50 OR s.maxspeed_backward <= 50)"
         sql_get_artificial_segments = text(
             f"""
             SELECT
@@ -205,7 +239,8 @@ class CRUDCatchmentArea:
                 {format_value_null_sql(input_table)},
                 {num_points},
                 '{",".join(valid_segment_classes)}',
-                10
+                {origin_point_cell_resolution},
+                '{additional_filters}'
             );
         """
         )
@@ -302,13 +337,14 @@ class CRUDCatchmentArea:
         """Create the input table for the catchment area calculation."""
 
         # Generate random table name
-        table_name = f"temporal.{str(uuid.uuid4()).replace('-', '_')}"
+        table_name = str(uuid.uuid4()).replace("-", "_")
+        table_name = f'temporal."{table_name}"'
 
         # Create temporary table for storing catchment area starting points
         await self.db_connection.execute(
             text(
                 f"""
-                CREATE TABLE "{table_name}" (
+                CREATE TABLE {table_name} (
                     id serial PRIMARY KEY,
                     geom geometry(Point, 4326)
                 );
@@ -321,28 +357,44 @@ class CRUDCatchmentArea:
         for i in range(len(obj_in.starting_points.latitude)):
             latitude = obj_in.starting_points.latitude[i]
             longitude = obj_in.starting_points.longitude[i]
-            insert_string += (
-                f"(ST_SetSRID(ST_MakePoint({longitude}, {latitude}), 4326)),"
-            )
+            insert_string += f"SELECT ST_SetSRID(ST_MakePoint({longitude}, {latitude}), 4326) AS geom UNION "
         await self.db_connection.execute(
             text(
                 f"""
-                INSERT INTO "{table_name}" (geom)
-                VALUES {insert_string.rstrip(",")};
+                INSERT INTO {table_name} (geom)
+                WITH clusters AS (
+                    SELECT
+                        ST_ClusterDBSCAN(
+                            ST_Transform(geom, 3857),
+                            eps := 5,
+                            minpoints := 1
+                        ) OVER () AS cluster_id,
+                        geom
+                    FROM (
+                        {insert_string.rstrip("UNION ")}
+                    ) AS points
+                )
+                SELECT ST_Centroid(ST_Collect(geom)) AS merged_geom
+                FROM clusters
+                GROUP BY cluster_id;
             """
             )
         )
 
         await self.db_connection.commit()
 
-        return table_name, len(obj_in.starting_points.latitude)
+        # Get actual count of starting points
+        sql_get_count = text(f"SELECT COUNT(*) FROM {table_name};")
+        num_points = (await self.db_connection.execute(sql_get_count)).fetchone()[0]
+
+        return table_name, num_points
 
     async def drop_temp_tables(
         self, input_table: str, network_modifications_table: str
     ):
         """Delete the temporary input and network modifications tables."""
 
-        await self.db_connection.execute(text(f'DROP TABLE "{input_table}";'))
+        await self.db_connection.execute(text(f"DROP TABLE {input_table};"))
         if network_modifications_table is not None:
             await self.db_connection.execute(
                 text(f'DROP TABLE "{network_modifications_table}";')
@@ -371,7 +423,7 @@ class CRUDCatchmentArea:
                     / speed
                 )
                 .otherwise(
-                    pl.col("length_m") / speed
+                    pl.col("length_m") / (BICYCLE_SPEED_FOOTWAYS / 3.6)
                 )  # This calculation is invoked when the segment class requires cyclists to walk their bicycle
                 .alias("cost"),
                 pl.when(
@@ -390,7 +442,7 @@ class CRUDCatchmentArea:
                     / speed
                 )
                 .otherwise(
-                    pl.col("length_m") / speed
+                    pl.col("length_m") / (BICYCLE_SPEED_FOOTWAYS / 3.6)
                 )  # This calculation is invoked when the segment class requires cyclists to walk their bicycle
                 .alias("reverse_cost"),
             )
@@ -402,7 +454,7 @@ class CRUDCatchmentArea:
                 )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
-                    pl.col("length_m") / speed
+                    pl.col("length_m") / (BICYCLE_SPEED_FOOTWAYS / 3.6)
                 )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
                 .alias("cost"),
                 pl.when(
@@ -411,9 +463,14 @@ class CRUDCatchmentArea:
                 )
                 .then((pl.col("length_m") * (1 + pl.col("impedance_surface"))) / speed)
                 .otherwise(
-                    pl.col("length_m") / speed
+                    pl.col("length_m") / (BICYCLE_SPEED_FOOTWAYS / 3.6)
                 )  # This calculation is invoked when the segment class requires cyclists to walk their pedelec
                 .alias("reverse_cost"),
+            )
+        elif mode == CatchmentAreaRoutingTypeActiveMobility.wheelchair:
+            return sub_network.with_columns(
+                (pl.col("length_m") / speed).alias("cost"),
+                (pl.col("length_m") / speed).alias("reverse_cost"),
             )
         elif mode == CatchmentAreaRoutingTypeCar.car:
             return sub_network.with_columns(
@@ -476,6 +533,15 @@ class CRUDCatchmentArea:
     async def save_result(self, obj_in, shapes, network, grid_index, grid):
         """Save the result of the catchment area computation to the database."""
 
+        # Compute step size for the catchment area
+        if type(obj_in.travel_cost) in [
+            CatchmentAreaTravelTimeCostActiveMobility,
+            CatchmentAreaTravelTimeCostMotorizedMobility,
+        ]:
+            step_size = obj_in.travel_cost.max_traveltime / obj_in.travel_cost.steps
+        else:
+            step_size = obj_in.travel_cost.max_distance / obj_in.travel_cost.steps
+
         if obj_in.catchment_area_type == "polygon":
             # Save catchment area geometry data (shapes)
             shapes = shapes["full"]
@@ -514,15 +580,20 @@ class CRUDCatchmentArea:
                 FROM isochrones_with_id a
                 LEFT JOIN LATERAL
                 (
-                    SELECT ST_DIFFERENCE(a.filled_geom, b.orig_geom) AS geom
+                    SELECT ST_DIFFERENCE(a.filled_geom, b.filled_geom) AS geom
                     FROM isochrones_with_id b
                     WHERE a.id + 1 = b.id
                 ) j ON {"TRUE" if obj_in.polygon_difference else "FALSE"};
             """
             )
 
-            await self.db_connection.execute(sql_insert_into_table)
-            await self.db_connection.commit()
+            try:
+                await self.db_connection.execute(sql_insert_into_table)
+                await self.db_connection.commit()
+            except Exception as e:
+                raise Exception(
+                    f"Error inserting into table {obj_in.result_table}: {str(e).splitlines()[:5]}"
+                ) from e
         elif obj_in.catchment_area_type == "network":
             # Save catchment area network data
             for batch_index in range(
@@ -537,7 +608,7 @@ class CRUDCatchmentArea:
                     ),
                 ):
                     coordinates = network["features"][i]["geometry"]["coordinates"]
-                    cost = network["features"][i]["properties"]["cost"]
+                    cost = math.ceil(network["features"][i]["properties"]["cost"] / step_size) * step_size
                     points_string = ""
                     for pair in coordinates:
                         points_string += f"ST_MakePoint({pair[0]}, {pair[1]}),"
@@ -552,8 +623,13 @@ class CRUDCatchmentArea:
                     VALUES {insert_string.rstrip(",")};
                 """
                 )
-                await self.db_connection.execute(insert_string)
-                await self.db_connection.commit()
+                try:
+                    await self.db_connection.execute(insert_string)
+                    await self.db_connection.commit()
+                except Exception as e:
+                    raise Exception(
+                        f"Error inserting into table {obj_in.result_table}: {str(e).splitlines()[:5]}"
+                    ) from e
         else:
             # Save catchment area grid data
             for batch_index in range(
@@ -566,11 +642,12 @@ class CRUDCatchmentArea:
                 ):
                     if math.isnan(grid[i]):
                         continue
+                    cost = math.ceil(grid[i] / step_size) * step_size
                     insert_string += f"""(
                         '{obj_in.layer_id}',
                         ST_SetSRID(h3_cell_to_boundary('{grid_index[i]}'::h3index)::geometry, 4326),
                         '{grid_index[i]}',
-                        ROUND({grid[i]})
+                        ROUND({cost})
                     ),"""
 
                 # Insert only if any grid data was added to the query in this batch
@@ -581,8 +658,13 @@ class CRUDCatchmentArea:
                         VALUES {insert_string.rstrip(",")};
                     """
                     )
-                    await self.db_connection.execute(insert_string)
-                    await self.db_connection.commit()
+                    try:
+                        await self.db_connection.execute(insert_string)
+                        await self.db_connection.commit()
+                    except Exception as e:
+                        raise Exception(
+                            f"Error inserting into table {obj_in.result_table}: {str(e).splitlines()[:5]}"
+                        ) from e
 
     async def run(self, obj_in: ICatchmentAreaActiveMobility | ICatchmentAreaCar):
         """Compute catchment areas for the given request parameters."""
@@ -597,7 +679,7 @@ class CRUDCatchmentArea:
             self.routing_network, _ = await StreetNetworkUtil(self.db_connection).fetch(
                 edge_layer_id=settings.BASE_STREET_NETWORK,
                 node_layer_id=None,
-                region_geofence_table=settings.NETWORK_REGION_TABLE,
+                region_geofence=f"SELECT * FROM {settings.NETWORK_REGION_TABLE}",
             )
         routing_network = self.routing_network
 
@@ -628,12 +710,14 @@ class CRUDCatchmentArea:
             # Delete input table for catchment area origin points
             await self.drop_temp_tables(input_table, network_modifications_table)
         except Exception as e:
-            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
+            if self.redis:
+                self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             await self.db_connection.rollback()
             if type(e) == DisconnectedOriginError:
-                self.redis.set(
-                    str(obj_in.layer_id), ProcessingStatus.disconnected_origin.value
-                )
+                if self.redis:
+                    self.redis.set(
+                        str(obj_in.layer_id), ProcessingStatus.disconnected_origin.value
+                    )
             print(e)
             return
         print(f"Network read time: {round(time.time() - start_time, 2)} sec")
@@ -658,9 +742,9 @@ class CRUDCatchmentArea:
                 speed = None
 
             if type(obj_in) is ICatchmentAreaActiveMobility:
-                zoom = 12
+                zoom = 13
             else:
-                zoom = 10  # Use lower resolution grid for car catchment areas
+                zoom = 11  # Use lower resolution grid for car catchment areas
 
             catchment_area_grid_index = None
             if obj_in.catchment_area_type != "rectangular_grid":
@@ -713,7 +797,8 @@ class CRUDCatchmentArea:
                 )
                 print("Computed catchment area shapes.")
         except Exception as e:
-            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
+            if self.redis:
+                self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             print(e)
             return
         print(
@@ -731,7 +816,8 @@ class CRUDCatchmentArea:
                 catchment_area_grid,
             )
         except Exception as e:
-            self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
+            if self.redis:
+                self.redis.set(str(obj_in.layer_id), ProcessingStatus.failure.value)
             await self.db_connection.rollback()
             print(e)
             return
@@ -739,4 +825,5 @@ class CRUDCatchmentArea:
 
         print(f"Total time: {round(time.time() - total_start, 2)} sec")
 
-        self.redis.set(str(obj_in.layer_id), ProcessingStatus.success.value)
+        if self.redis:
+            self.redis.set(str(obj_in.layer_id), ProcessingStatus.success.value)
