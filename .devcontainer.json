@@ -39,6 +39,7 @@
         "api",
         "rabbitmq",
         "redis",
-        "celery-worker"
+        "celery-worker",
+        "motis"
     ]
 }
