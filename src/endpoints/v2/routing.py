@@ -122,10 +122,10 @@ async def compute_ab_routing(
     params: IMotisPlan = Body(
         ...,
         example=motis_request_examples["default"],
-        description="The motis plan service parameters.",
+        description="The motis plan service required parameters.",
     ),
 ):
-    await compute_motis_request(params)
+    return await compute_motis_request(params)
 
 
 async def compute_motis_request(params: IMotisPlan):
@@ -133,20 +133,14 @@ async def compute_motis_request(params: IMotisPlan):
     Computes a routing plan by forwarding a request to the motis service.
     """
 
-    # Use httpx.AsyncClient for improved performance and connection pooling
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(settings.MOTIS_PLAN_URL, params=params.dict())
             response.raise_for_status()
-            # print(response.json())
-            # return {
-            #     "result": response.json(),
-            #     "message": "Plan computed successfully.",
-            # }
 
             return JSONResponse(
                 content={
-                    "result": "ok!!!!!",
+                    "result": response.json(),
                     "message": "Plan computed successfully.",
                 },
                 status_code=200,
