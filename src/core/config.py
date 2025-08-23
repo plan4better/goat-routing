@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     POSTGRES_PORT: Optional[str] = "5432"
     POSTGRES_DATABASE_URI: str = None
 
+    MOTIS_HOST: Optional[str] = "motis"
+    MOTIS_PORT: Optional[str] = 8080
+    MOTIS_PLAN_URL: str = f"http://{MOTIS_HOST}:{MOTIS_PORT}/api/v4/plan/"
+
     @validator("POSTGRES_DATABASE_URI", pre=True)
     def postgres_database_uri_(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
         return f'postgresql://{values.get("POSTGRES_USER")}:{values.get("POSTGRES_PASSWORD")}@{values.get("POSTGRES_SERVER")}:{values.get("POSTGRES_PORT")}/{values.get("POSTGRES_DB")}'

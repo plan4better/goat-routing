@@ -3,6 +3,7 @@ version: "3.9"
 networks:
   proxy:
     name: goat
+
 services:
   api:
     build:
@@ -51,13 +52,10 @@ services:
   motis:
     image: nginx:alpine
     ports:
-      - 8181:8080   
+      - 8181:8080
     volumes:
       - .:/app
     working_dir: /app/motis
     command: ./motis server
     networks:
       proxy:
-
-volumes:
-  motis_data_volume:
