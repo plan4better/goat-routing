@@ -1,7 +1,37 @@
 from datetime import datetime
+from enum import Enum
 from typing import Dict, List
 
 from pydantic import BaseModel, Field
+
+
+class MotisMode(str, Enum):
+    WALK = "WALK"
+    BIKE = "BIKE"
+    RENTAL = "RENTAL"
+    CAR = "CAR"
+    CAR_PARKING = "CAR_PARKING"
+    CAR_DROPOFF = "CAR_DROPOFF"
+    ODM = "ODM"
+    FLEX = "FLEX"
+    TRANSIT = "TRANSIT"
+    TRAM = "TRAM"
+    SUBWAY = "SUBWAY"
+    FERRY = "FERRY"
+    AIRPLANE = "AIRPLANE"
+    METRO = "METRO"
+    BUS = "BUS"
+    COACH = "COACH"
+    RAIL = "RAIL"
+    HIGHSPEED_RAIL = "HIGHSPEED_RAIL"
+    LONG_DISTANCE = "LONG_DISTANCE"
+    NIGHT_RAIL = "NIGHT_RAIL"
+    REGIONAL_FAST_RAIL = "REGIONAL_FAST_RAIL"
+    REGIONAL_RAIL = "REGIONAL_RAIL"
+    CABLE_CAR = "CABLE_CAR"
+    FUNICULAR = "FUNICULAR"
+    AREAL_LIFT = "AREAL_LIFT"
+    OTHER = "OTHER"
 
 
 class MotisPlace(BaseModel):
@@ -33,17 +63,63 @@ class IMotisPlan(BaseModel):
     fromPlace: str = Field(
         ...,
         title="From Place",
-        description="The starting place as a 'latitude,longitude[,level]' tuple or stop ID. (optional) level: the OSM level (default: 0).",
+        description="The starting place as a 'latitude,longitude[,level]' tuple OR stop ID.\
+            (optional) level: the OSM level (default: 0).",
     )
     toPlace: str = Field(
         ...,
         title="To Place",
-        description="The destination as a 'latitude,longitude[,level]' tuple or stop ID.",
+        description="The destination as a 'latitude,longitude[,level]' tuple OR stop ID.\
+            (optional) level: the OSM level (default: 0).",
     )
     detailedTransfers: bool = Field(
         ...,
+        title="Detailed Transfers",
+        description="true: Compute transfer polylines and step instructions (default).\
+            false: Only return basic information (start time, end time, duration) for transfers.",
     )
-    # Add optional params
+    # Optional params
+    time: str = Field(
+        None,
+        title="Time",
+        description="Optional. Defaults to the current time <date-time>.\
+              Departure time ($arriveBy=false) / arrival date ($arriveBy=true)",
+    )
+    arriveBy: bool = Field(
+        default="false",
+        title="Arrive By time of arrival or time of departure",
+        description="arriveBy=true: the parameters date and time refer to the arrival time.\
+            arriveBy=false: the parameters date and time refer to the departure time",
+    )
+    transitModes: List[str] = Field(
+        default=MotisMode.TRANSIT,
+        title="Modes",
+        description="Array of strings representing the desired modes of transport (default=TRANSIT).",
+    )
+
+
+motis_request_examples = {
+    "default": {
+        "fromPlace": "50.7754385,6.0815102",
+        "toPlace": "50.7753455,6.0838868",
+        "detailedTransfers": "false",
+    },
+    "default_detailed": {
+        "fromPlace": "50.7754385,6.0815102",
+        "toPlace": "50.7753455,6.0838868",
+        "detailedTransfers": "true",
+        "time": "2025-08-28T18:00:00Z",
+        "arriveBy": "true",
+    },
+    "default_bus": {
+        "fromPlace": "50.7950,6.1260",
+        "toPlace": "50.7651,6.0821",
+        "detailedTransfers": "false",
+        "time": "2025-08-28T18:00:00Z",
+        "arriveBy": "false",
+        "transitModes": [MotisMode.BUS],
+    },
+}
 
 
 class DirectTrip(BaseModel):
@@ -60,14 +136,17 @@ class LegGeometry(BaseModel):
     pass
 
 
+# TODO
 class Rental(BaseModel):
     pass
 
 
+# TODO
 class FareTransfer(BaseModel):
     pass
 
 
+# TODO
 class Alert(BaseModel):
     pass
 
@@ -319,17 +398,3 @@ class MotisPlanResponse(BaseModel):
         title="Next Page Cursor",
         description="A cursor to get the next page of results.",
     )
-
-
-motis_request_examples = {
-    "default": {
-        "fromPlace": "48.8584,2.2945",
-        "toPlace": "48.8606,2.3387",
-        "detailedTransfers": "false",
-    },
-    "default_detailed": {
-        "fromPlace": "48.8584,2.2945",
-        "toPlace": "48.8606,2.3387",
-        "detailedTransfers": "true",
-    },
-}

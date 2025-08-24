@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     POSTGRES_DATABASE_URI: str = None
 
     MOTIS_HOST: Optional[str] = "motis"
-    MOTIS_PORT: Optional[str] = 8080
+    MOTIS_PORT: Optional[str] = "8080"
     MOTIS_PLAN_URL: str = f"http://{MOTIS_HOST}:{MOTIS_PORT}/api/v4/plan/"
 
     @validator("POSTGRES_DATABASE_URI", pre=True)
