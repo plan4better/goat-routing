@@ -121,7 +121,7 @@ async def compute_catchment_area(
 async def compute_ab_routing(
     params: IMotisPlan = Body(
         ...,
-        example=motis_request_examples["default_bus"],
+        example=motis_request_examples["default"],
         description="The motis plan service required parameters.",
     ),
 ):
@@ -134,7 +134,9 @@ async def compute_ab_routing(
 async def compute_motis_request(params: IMotisPlan):
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(settings.MOTIS_PLAN_URL, params=params.dict())
+            response = await client.get(
+                settings.MOTIS_PLAN_ENDPOINT, params=params.dict()
+            )
             response.raise_for_status()
 
             return JSONResponse(

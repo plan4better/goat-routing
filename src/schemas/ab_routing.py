@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -79,23 +79,24 @@ class IMotisPlan(BaseModel):
             false: Only return basic information (start time, end time, duration) for transfers.",
     )
     # Optional params
-    time: str = Field(
-        None,
+    time: Optional[str] = Field(
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         title="Time",
         description="Optional. Defaults to the current time <date-time>.\
               Departure time ($arriveBy=false) / arrival date ($arriveBy=true)",
     )
-    arriveBy: bool = Field(
-        default="false",
+    arriveBy: Optional[bool] = Field(
+        default=False,
         title="Arrive By time of arrival or time of departure",
         description="arriveBy=true: the parameters date and time refer to the arrival time.\
             arriveBy=false: the parameters date and time refer to the departure time",
     )
-    transitModes: List[str] = Field(
-        default=MotisMode.TRANSIT,
+    transitModes: Optional[List[str]] = Field(
+        default=MotisMode.TRANSIT.value,
         title="Modes",
         description="Array of strings representing the desired modes of transport (default=TRANSIT).",
     )
+    ...
 
 
 motis_request_examples = {
@@ -117,7 +118,7 @@ motis_request_examples = {
         "detailedTransfers": "false",
         "time": "2025-08-28T18:00:00Z",
         "arriveBy": "false",
-        "transitModes": [MotisMode.BUS],
+        "transitModes": [MotisMode.BUS.value],
     },
 }
 

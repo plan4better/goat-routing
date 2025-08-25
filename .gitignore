@@ -4,5 +4,3 @@
 poetry.lock
 
 /src/cache
-
-motis/*

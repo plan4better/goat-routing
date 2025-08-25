@@ -55,7 +55,16 @@ class Settings(BaseSettings):
 
     MOTIS_HOST: Optional[str] = "motis"
     MOTIS_PORT: Optional[str] = "8080"
-    MOTIS_PLAN_URL: str = f"http://{MOTIS_HOST}:{MOTIS_PORT}/api/v4/plan/"
+    MOTIS_BASE_URL: str = None
+    MOTIS_PLAN_ENDPOINT: str = None
+
+    @validator("MOTIS_BASE_URL", pre=True)
+    def motis_base_url(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
+        return f'http://{values.get("MOTIS_HOST")}:{values.get("MOTIS_PORT")}'
+
+    @validator("MOTIS_PLAN_ENDPOINT")
+    def motis_plan_endpoint(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
+        return f'{values.get("MOTIS_BASE_URL")}/api/v4/plan/'
 
     @validator("POSTGRES_DATABASE_URI", pre=True)
     def postgres_database_uri_(cls, v: Optional[str], values: Dict[str, Any]) -> Any:

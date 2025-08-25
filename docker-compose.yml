@@ -51,11 +51,16 @@ services:
 
   motis:
     image: nginx:alpine
+    container_name: motis
     ports:
       - 8181:8080
     volumes:
-      - .:/app
+      - mydata:/app/motis/data
+      - ./motis_entrypoint.sh:/app/entrypoint.sh:ro
     working_dir: /app/motis
-    command: ./motis server
+    command: ["/bin/sh", "/app/entrypoint.sh"]
     networks:
       proxy:
+
+volumes: 
+  mydata:
