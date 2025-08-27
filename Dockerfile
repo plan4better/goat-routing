@@ -48,6 +48,7 @@ COPY ./pyproject.toml ./poetry.lock* /app/
 ARG INSTALL_DEV=false
 RUN bash -c "if [ $INSTALL_DEV == 'True' ] ; then apt-get update && apt-get install -y --no-install-recommends postgresql-client-15 ; fi"
 RUN bash -c "if [ $INSTALL_DEV == 'True' ] ; then poetry install --no-root ; else poetry install --no-root --only main ; fi"
+RUN bash -c "if [ $INSTALL_DEV == 'True' ] ; then poetry update; fi"
 COPY . /app
 
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "6000"]

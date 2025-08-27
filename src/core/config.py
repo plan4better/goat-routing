@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     POSTGRES_PORT: Optional[str] = "5432"
     POSTGRES_DATABASE_URI: str = None
 
+    @validator("POSTGRES_DATABASE_URI", pre=True)
+    def postgres_database_uri_(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
+        return f'postgresql://{values.get("POSTGRES_USER")}:{values.get("POSTGRES_PASSWORD")}@{values.get("POSTGRES_SERVER")}:{values.get("POSTGRES_PORT")}/{values.get("POSTGRES_DB")}'
+
     MOTIS_HOST: Optional[str] = "motis"
     MOTIS_PORT: Optional[str] = "8080"
     MOTIS_BASE_URL: str = None
@@ -66,9 +70,10 @@ class Settings(BaseSettings):
     def motis_plan_endpoint(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
         return f'{values.get("MOTIS_BASE_URL")}/api/v4/plan/'
 
-    @validator("POSTGRES_DATABASE_URI", pre=True)
-    def postgres_database_uri_(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
-        return f'postgresql://{values.get("POSTGRES_USER")}:{values.get("POSTGRES_PASSWORD")}@{values.get("POSTGRES_SERVER")}:{values.get("POSTGRES_PORT")}/{values.get("POSTGRES_DB")}'
+    GOOGLE_API_KEY: str
+    GOOGLE_DIRECTIONS_URL: Optional[str] = (
+        "https://maps.googleapis.com/maps/api/directions/json"
+    )
 
     ASYNC_SQLALCHEMY_DATABASE_URI: Optional[AsyncPostgresDsn] = None
 

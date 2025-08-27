@@ -73,7 +73,7 @@ class IMotisPlan(BaseModel):
             (optional) level: the OSM level (default: 0).",
     )
     detailedTransfers: bool = Field(
-        ...,
+        default=True,
         title="Detailed Transfers",
         description="true: Compute transfer polylines and step instructions (default).\
             false: Only return basic information (start time, end time, duration) for transfers.",
@@ -109,16 +109,22 @@ motis_request_examples = {
         "fromPlace": "50.7754385,6.0815102",
         "toPlace": "50.7753455,6.0838868",
         "detailedTransfers": "true",
-        "time": "2025-08-28T18:00:00Z",
+        "time": "2025-08-28T08:00:00Z",
         "arriveBy": "true",
     },
     "default_bus": {
         "fromPlace": "50.7950,6.1260",
         "toPlace": "50.7651,6.0821",
         "detailedTransfers": "false",
-        "time": "2025-08-28T18:00:00Z",
+        "time": "2025-08-28T08:00:00Z",
         "arriveBy": "false",
         "transitModes": [MotisMode.BUS.value],
+    },
+    "benchmark": {
+        "fromPlace": "50.75082702571396,6.071697684563873",
+        "toPlace": "50.78052725007913,6.070394639022425",
+        "time": "2025-08-28T08:00:00Z",
+        "arriveBy": "false",
     },
 }
 
@@ -132,22 +138,18 @@ class DirectTrip(BaseModel):
     )
 
 
-# TODO
 class LegGeometry(BaseModel):
     pass
 
 
-# TODO
 class Rental(BaseModel):
     pass
 
 
-# TODO
 class FareTransfer(BaseModel):
     pass
 
 
-# TODO
 class Alert(BaseModel):
     pass
 
