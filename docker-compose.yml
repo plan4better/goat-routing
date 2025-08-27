@@ -3,7 +3,7 @@ version: "3.9"
 networks:
   proxy:
     name: goat
- 
+
 services:
   api:
     build:
@@ -48,3 +48,19 @@ services:
       - redis
     networks:
       proxy:
+
+  motis:
+    image: nginx:alpine
+    container_name: motis
+    ports:
+      - 8181:8080
+    volumes:
+      - mydata:/app/motis/data
+      - ./motis_entrypoint.sh:/app/entrypoint.sh:ro
+    working_dir: /app/motis
+    command: ["/bin/sh", "/app/entrypoint.sh"]
+    networks:
+      proxy:
+
+volumes: 
+  mydata:

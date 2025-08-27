@@ -57,6 +57,24 @@ class Settings(BaseSettings):
     def postgres_database_uri_(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
         return f'postgresql://{values.get("POSTGRES_USER")}:{values.get("POSTGRES_PASSWORD")}@{values.get("POSTGRES_SERVER")}:{values.get("POSTGRES_PORT")}/{values.get("POSTGRES_DB")}'
 
+    MOTIS_HOST: Optional[str] = "motis"
+    MOTIS_PORT: Optional[str] = "8080"
+    MOTIS_BASE_URL: str = None
+    MOTIS_PLAN_ENDPOINT: str = None
+
+    @validator("MOTIS_BASE_URL", pre=True)
+    def motis_base_url(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
+        return f'http://{values.get("MOTIS_HOST")}:{values.get("MOTIS_PORT")}'
+
+    @validator("MOTIS_PLAN_ENDPOINT")
+    def motis_plan_endpoint(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
+        return f'{values.get("MOTIS_BASE_URL")}/api/v4/plan/'
+
+    GOOGLE_API_KEY: str
+    GOOGLE_DIRECTIONS_URL: Optional[str] = (
+        "https://maps.googleapis.com/maps/api/directions/json"
+    )
+
     ASYNC_SQLALCHEMY_DATABASE_URI: Optional[AsyncPostgresDsn] = None
 
     @validator("ASYNC_SQLALCHEMY_DATABASE_URI", pre=True)
